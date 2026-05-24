@@ -1,4 +1,4 @@
-# com.streamflow:pulse-client — Java SDK for StreamFlow Pulse
+# io.streamflowmesh:pulse-client — Java SDK for StreamFlow Pulse
 
 Official Java client for [Pulse](https://github.com/olsisoft/pulse-java) — the AI Agent Platform. Targets **JDK 17 LTS**, single runtime dependency (Jackson), built on `java.net.http.HttpClient` (no Apache HttpClient / OkHttp pulled in).
 
@@ -20,7 +20,7 @@ for (Map<String, Object> pipeline : client.pipelines().list()) {
 
 ```xml
 <dependency>
-    <groupId>com.streamflow</groupId>
+    <groupId>io.streamflowmesh</groupId>
     <artifactId>pulse-client</artifactId>
     <version>2.6.0</version>
 </dependency>
@@ -29,7 +29,7 @@ for (Map<String, Object> pipeline : client.pipelines().list()) {
 ### Gradle
 
 ```groovy
-implementation 'com.streamflow:pulse-client:2.6.0'
+implementation 'io.streamflowmesh:pulse-client:2.6.0'
 ```
 
 Requires **JDK 17 or higher**. Only runtime dep is Jackson 2.18+ — already on every Spring Boot / Quarkus / Micronaut / Helidon classpath.

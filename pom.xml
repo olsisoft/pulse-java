@@ -17,7 +17,7 @@
                              http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.streamflow</groupId>
+    <groupId>io.streamflowmesh</groupId>
     <artifactId>pulse-client</artifactId>
     <version>2.6.0</version>
     <packaging>jar</packaging>
