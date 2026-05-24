@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  B-098 Phase 3 — Java SDK for StreamFlow Pulse.
+
+  Standalone Maven project NOT in the parent reactor by design:
+  the SDK ships to Maven Central under com.streamflow:pulse-client on
+  its own release cadence, and the server build should not depend on
+  the client (the dependency goes the other way around in user code).
+
+  Targets JDK 17 LTS as the floor — broadest enterprise reach
+  (Spring Boot 3.x already requires 17, most production JVMs are
+  on 17 or 21).
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.streamflow</groupId>
+    <artifactId>pulse-client</artifactId>
+    <version>2.6.0</version>
+    <packaging>jar</packaging>
+
+    <name>Pulse Java Client</name>
+    <description>Official Java client for StreamFlow Pulse — AI Agent Platform</description>
+    <url>https://github.com/olsisoft/streamflow</url>
+
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <name>Njong Michael</name>
+            <email>mike.njo@gmail.com</email>
+            <organization>StreamFlow</organization>
+        </developer>
+    </developers>
+
+    <scm>
+        <url>https://github.com/olsisoft/streamflow</url>
+        <connection>scm:git:git://github.com/olsisoft/streamflow.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/olsisoft/streamflow.git</developerConnection>
+        <tag>HEAD</tag>
+    </scm>
+
+    <properties>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <maven.compiler.release>17</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <jackson.version>2.18.2</jackson.version>
+        <junit.version>5.11.4</junit.version>
+        <wiremock.version>3.10.0</wiremock.version>
+        <assertj.version>3.27.0</assertj.version>
+    </properties>
+
+    <dependencies>
+        <!-- Single runtime dependency. Jackson is the universal JSON
+             library on the JVM — every Spring Boot, Quarkus, Micronaut,
+             and Helidon stack already has it on the classpath, so this
+             is effectively a "provided" dep in practice. -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+
+        <!-- Tests -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.wiremock</groupId>
+            <artifactId>wiremock</artifactId>
+            <version>${wiremock.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>${assertj.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.2</version>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+                <version>3.3.1</version>
+                <executions>
+                    <execution>
+                        <id>attach-sources</id>
+                        <goals><goal>jar-no-fork</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <version>3.11.2</version>
+                <executions>
+                    <execution>
+                        <id>attach-javadocs</id>
+                        <goals><goal>jar</goal></goals>
+                        <configuration>
+                            <doclint>none</doclint>
+                            <failOnError>false</failOnError>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

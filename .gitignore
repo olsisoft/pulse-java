@@ -1,0 +1,15 @@
+# Maven build artifacts
+target/
+*.class
+dependency-reduced-pom.xml
+
+# IDE
+.idea/
+.vscode/
+*.iml
+.classpath
+.project
+.settings/
+
+# OS
+.DS_Store
