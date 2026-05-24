@@ -1,0 +1,62 @@
+name: Release to Maven Central
+
+# Lives at .github/workflows/release.yaml in olsisoft/pulse-java.
+# Triggered by tag push (v*). Builds + signs + publishes to Maven Central
+# via the new Sonatype Central Portal (publisher.central.sonatype.com).
+#
+# Prerequisites — set up ONCE in the repo's Settings → Secrets:
+#   - CENTRAL_USERNAME — Sonatype Central Portal user token name
+#   - CENTRAL_PASSWORD — Sonatype Central Portal user token value
+#   - GPG_PRIVATE_KEY  — armored PGP private key (gpg --export-secret-key --armor)
+#   - GPG_PASSPHRASE   — passphrase for the key
+#   - The PGP public key must be published to keys.openpgp.org so Sonatype
+#     can verify signatures.
+#
+# Reference: https://central.sonatype.org/publish/publish-portal-gradle/
+#            https://central.sonatype.org/publish/publish-portal-maven/
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: maven-central   # configure in repo settings → environments
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+          server-id: central
+          server-username: CENTRAL_USERNAME
+          server-password: CENTRAL_PASSWORD
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          gpg-passphrase: GPG_PASSPHRASE
+
+      - name: Verify tag matches POM version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pom_version=$(mvn -B -q -DforceStdout help:evaluate -Dexpression=project.version)
+          if [ "$tag_version" != "$pom_version" ]; then
+            echo "::error::Tag ($tag_version) does not match POM version ($pom_version)"
+            exit 1
+          fi
+
+      - name: Run tests
+        run: mvn -B -ntp test
+
+      - name: Sign + deploy to Maven Central
+        run: mvn -B -ntp -P release deploy
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
