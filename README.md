@@ -1,6 +1,6 @@
 # com.streamflow:pulse-client — Java SDK for StreamFlow Pulse
 
-Official Java client for [Pulse](https://github.com/olsisoft/streamflow) — the AI Agent Platform. Targets **JDK 17 LTS**, single runtime dependency (Jackson), built on `java.net.http.HttpClient` (no Apache HttpClient / OkHttp pulled in).
+Official Java client for [Pulse](https://github.com/olsisoft/pulse-java) — the AI Agent Platform. Targets **JDK 17 LTS**, single runtime dependency (Jackson), built on `java.net.http.HttpClient` (no Apache HttpClient / OkHttp pulled in).
 
 ```java
 PulseClient client = PulseClient.builder()
@@ -143,8 +143,8 @@ PulseClient client = PulseClient.builder()
 ## Development
 
 ```bash
-git clone https://github.com/olsisoft/streamflow.git
-cd streamflow/pulse-java
+git clone https://github.com/olsisoft/pulse-java.git
+cd pulse-java
 
 # Run tests (JUnit 5 + WireMock, fully offline)
 mvn test

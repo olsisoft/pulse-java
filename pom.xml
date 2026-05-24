@@ -24,7 +24,7 @@
 
     <name>Pulse Java Client</name>
     <description>Official Java client for StreamFlow Pulse — AI Agent Platform</description>
-    <url>https://github.com/olsisoft/streamflow</url>
+    <url>https://github.com/olsisoft/pulse-java</url>
 
     <licenses>
         <license>
@@ -43,9 +43,9 @@
     </developers>
 
     <scm>
-        <url>https://github.com/olsisoft/streamflow</url>
-        <connection>scm:git:git://github.com/olsisoft/streamflow.git</connection>
-        <developerConnection>scm:git:ssh://git@github.com/olsisoft/streamflow.git</developerConnection>
+        <url>https://github.com/olsisoft/pulse-java</url>
+        <connection>scm:git:git://github.com/olsisoft/pulse-java.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/olsisoft/pulse-java.git</developerConnection>
         <tag>HEAD</tag>
     </scm>
 
@@ -133,4 +133,86 @@
             </plugin>
         </plugins>
     </build>
+
+    <!--
+      Wired for the new Sonatype Central Portal (the successor to OSSRH,
+      mandatory for new groupIds since 2024).
+
+      The `central-publishing-maven-plugin` re-binds the `deploy` goal so
+      `mvn -P release deploy` uploads to https://central.sonatype.com via
+      the user-token credentials (CENTRAL_USERNAME / CENTRAL_PASSWORD).
+      The `release` profile additionally activates GPG signing — Maven
+      Central rejects unsigned uploads.
+
+      `autoPublish=true` skips the manual "release staging" step in the
+      Central Portal UI — the deploy lands directly as a published version.
+      Flip to false if you want a staging step you can drop on
+      verification failure (recommended for the FIRST release of a new
+      groupId; safe to flip back to true once provenance is established).
+    -->
+    <distributionManagement>
+        <repository>
+            <id>central</id>
+            <name>Sonatype Central Portal</name>
+            <url>https://central.sonatype.com</url>
+        </repository>
+        <snapshotRepository>
+            <id>central</id>
+            <name>Sonatype Central Portal — snapshots</name>
+            <url>https://central.sonatype.com</url>
+        </snapshotRepository>
+    </distributionManagement>
+
+    <profiles>
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <!--
+                      Sign every artifact with the GPG key matching the
+                      public key uploaded to keys.openpgp.org. The
+                      pinentry-mode=loopback argument (passed below as
+                      two separate gpgArguments entries) lets gpg accept
+                      the passphrase from the env (GPG_PASSPHRASE) instead
+                      of prompting interactively — required for CI.
+                    -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>3.2.7</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals><goal>sign</goal></goals>
+                                <configuration>
+                                    <gpgArguments>
+                                        <arg>--pinentry-mode</arg>
+                                        <arg>loopback</arg>
+                                    </gpgArguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <!--
+                      Re-binds the `deploy` lifecycle phase to upload via
+                      the Sonatype Central Portal API. `extensions=true`
+                      registers the plugin's wagon-like extension so
+                      Maven's deploy plugin defers to it.
+                    -->
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>0.7.0</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                            <autoPublish>true</autoPublish>
+                            <waitUntil>published</waitUntil>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>
