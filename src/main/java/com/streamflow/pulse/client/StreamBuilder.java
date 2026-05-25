@@ -256,6 +256,112 @@ public final class StreamBuilder {
         return this;
     }
 
+    /**
+     * B-109 — enrich each event with an LLM completion. {@code prompt}
+     * supports {@code {field}} placeholders (and {@code {__payload__}})
+     * substituted from the event server-side; the completion lands on the
+     * event under {@code options.outputField}.
+     */
+    public StreamBuilder mapLlm(String prompt, MapLlmOptions options) {
+        requireNonBlank("prompt", prompt);
+        Objects.requireNonNull(options, "options");
+        requireNonBlank("outputField", options.outputField);
+        Map<String, Object> op = new LinkedHashMap<>();
+        op.put("type", "mapLlm");
+        op.put("prompt", prompt);
+        op.put("outputField", options.outputField);
+        if (options.model != null) op.put("model", options.model);
+        if (options.temperature != null) op.put("temperature", options.temperature);
+        if (options.maxTokens != null) op.put("maxTokens", options.maxTokens);
+        if (options.parallelism != null) op.put("parallelism", options.parallelism);
+        if (options.ordering != null) op.put("ordering", options.ordering);
+        if (options.onFailure != null) op.put("onFailure", options.onFailure);
+        if (options.maxCallsPerSec != null) op.put("maxCallsPerSec", options.maxCallsPerSec);
+        operators.add(op);
+        return this;
+    }
+
+    /**
+     * B-109 — LLM → typed structured fields merged into the event. The LLM is
+     * asked for a JSON object keyed by {@code options.schema}'s fields;
+     * missing / malformed fields become null server-side.
+     */
+    public StreamBuilder extract(ExtractOptions options) {
+        Objects.requireNonNull(options, "options");
+        requireNonBlank("instruction", options.instruction);
+        if (options.schema == null || options.schema.isEmpty()) {
+            throw new IllegalArgumentException("extract operator requires a non-empty schema");
+        }
+        Map<String, Object> op = new LinkedHashMap<>();
+        op.put("type", "extract");
+        op.put("instruction", options.instruction);
+        op.put("schema", new LinkedHashMap<>(options.schema));
+        if (options.model != null) op.put("model", options.model);
+        if (options.temperature != null) op.put("temperature", options.temperature);
+        if (options.maxTokens != null) op.put("maxTokens", options.maxTokens);
+        if (options.onFailure != null) op.put("onFailure", options.onFailure);
+        operators.add(op);
+        return this;
+    }
+
+    /**
+     * B-109 Phase 2 — invoke an MCP tool per event. {@code options.args}
+     * string values support {@code {field}} substitution. On success the tool
+     * output is written to {@code options.outputField} (omit for a
+     * fire-and-forget side effect).
+     */
+    public StreamBuilder mcpCall(String tool, McpCallOptions options) {
+        requireNonBlank("tool", tool);
+        Map<String, Object> op = new LinkedHashMap<>();
+        op.put("type", "mcpCall");
+        op.put("tool", tool);
+        if (options != null) {
+            if (options.args != null) op.put("args", new LinkedHashMap<>(options.args));
+            if (options.outputField != null) op.put("outputField", options.outputField);
+            if (options.parallelism != null) op.put("parallelism", options.parallelism);
+            if (options.ordering != null) op.put("ordering", options.ordering);
+            if (options.onFailure != null) op.put("onFailure", options.onFailure);
+        }
+        operators.add(op);
+        return this;
+    }
+
+    /**
+     * B-112 — score each event with an embedded ML model. Runs an uploaded
+     * ONNX model in-process on the Pulse engine (no model-server hop). The
+     * named {@code options.inputFields} are pulled from the event payload and
+     * fed to the model; the model's output is written as a nested object under
+     * {@code options.outputField} so downstream operators can branch on it
+     * (e.g. {@code .filter("prediction.fraud_score > 0.8")}).
+     *
+     * <p>Upload the model first with {@link PulseClient.ModelsResource#upload}.
+     */
+    public StreamBuilder mlPredict(MlPredictOptions options) {
+        Objects.requireNonNull(options, "options");
+        requireNonBlank("model", options.model);
+        requireNonBlank("outputField", options.outputField);
+        if (options.inputFields == null || options.inputFields.isEmpty()) {
+            throw new IllegalArgumentException(
+                "mlPredict requires a non-empty list of inputFields");
+        }
+        for (String f : options.inputFields) {
+            if (f == null || f.isBlank()) {
+                throw new IllegalArgumentException(
+                    "mlPredict inputFields must all be non-blank strings");
+            }
+        }
+        Map<String, Object> op = new LinkedHashMap<>();
+        op.put("type", "mlPredict");
+        op.put("model", options.model);
+        op.put("inputFields", new ArrayList<>(options.inputFields));
+        op.put("outputField", options.outputField);
+        if (options.parallelism != null) op.put("parallelism", options.parallelism);
+        if (options.ordering != null) op.put("ordering", options.ordering);
+        if (options.onFailure != null) op.put("onFailure", options.onFailure);
+        operators.add(op);
+        return this;
+    }
+
     /** Broadcast join: enrich the stream against a fully-replicated table. */
     public StreamBuilder broadcastJoin(BroadcastJoinOptions options) {
         Objects.requireNonNull(options, "options");
@@ -304,6 +410,20 @@ public final class StreamBuilder {
         this.sinkConfig = new LinkedHashMap<>(options.sinkConfig != null ? options.sinkConfig : Map.of());
         this.sinkLabel = options.label;
         return this;
+    }
+
+    /**
+     * Terminate the stream in a connector sink (Segment, Kafka, Postgres, …) —
+     * an ergonomic, connector-first alias for {@code toTopic(topic, new
+     * ToTopicOptions().sinkChannel(connectorType).sinkConfig(config))} using an
+     * intermediate {@code <connectorType>-sink-out} topic. {@code connectorType}
+     * is a subType from {@code client.connectors().list()}; bridged connectors
+     * require the enterprise bridge JAR on the server.
+     */
+    public StreamBuilder toConnector(String connectorType, Map<String, Object> config) {
+        requireNonBlank("connectorType", connectorType);
+        return toTopic(connectorType + "-sink-out",
+                new ToTopicOptions().sinkChannel(connectorType).sinkConfig(config));
     }
 
     /**
@@ -690,6 +810,115 @@ public final class StreamBuilder {
 
         public CepOptions within(String within) { this.within = within; return this; }
         public CepOptions name(String name) { this.name = name; return this; }
+    }
+
+    /** B-109 — options for {@link #mapLlm(String, MapLlmOptions)}. */
+    public static final class MapLlmOptions {
+        String outputField;
+        String model;
+        Double temperature;
+        Integer maxTokens;
+        Integer parallelism;
+        String ordering;
+        String onFailure;
+        Integer maxCallsPerSec;
+
+        public MapLlmOptions outputField(String f) { this.outputField = f; return this; }
+        public MapLlmOptions model(String m) { this.model = m; return this; }
+        public MapLlmOptions temperature(double t) { this.temperature = t; return this; }
+        public MapLlmOptions maxTokens(int n) { this.maxTokens = n; return this; }
+        public MapLlmOptions parallelism(int n) { this.parallelism = n; return this; }
+
+        /** Must be {@code "PRESERVE_INPUT"} or {@code "UNORDERED"}. */
+        public MapLlmOptions ordering(String o) {
+            if (o != null && !o.equals("PRESERVE_INPUT") && !o.equals("UNORDERED")) {
+                throw new IllegalArgumentException(
+                    "ordering must be PRESERVE_INPUT or UNORDERED, got '" + o + "'");
+            }
+            this.ordering = o; return this;
+        }
+
+        /** Must be {@code "EMIT_ERROR"}, {@code "DROP"} or {@code "PASS_THROUGH"}. */
+        public MapLlmOptions onFailure(String f) {
+            this.onFailure = checkFailure(f); return this;
+        }
+
+        public MapLlmOptions maxCallsPerSec(int n) { this.maxCallsPerSec = n; return this; }
+    }
+
+    /** B-109 — options for {@link #extract(ExtractOptions)}. */
+    public static final class ExtractOptions {
+        String instruction;
+        Map<String, String> schema;
+        String model;
+        Double temperature;
+        Integer maxTokens;
+        String onFailure;
+
+        public ExtractOptions instruction(String i) { this.instruction = i; return this; }
+        public ExtractOptions schema(Map<String, String> s) { this.schema = s; return this; }
+        public ExtractOptions model(String m) { this.model = m; return this; }
+        public ExtractOptions temperature(double t) { this.temperature = t; return this; }
+        public ExtractOptions maxTokens(int n) { this.maxTokens = n; return this; }
+        public ExtractOptions onFailure(String f) { this.onFailure = checkFailure(f); return this; }
+    }
+
+    /** B-109 Phase 2 — options for {@link #mcpCall(String, McpCallOptions)}. */
+    public static final class McpCallOptions {
+        Map<String, Object> args;
+        String outputField;
+        Integer parallelism;
+        String ordering;
+        String onFailure;
+
+        public McpCallOptions args(Map<String, Object> a) { this.args = a; return this; }
+        public McpCallOptions outputField(String f) { this.outputField = f; return this; }
+        public McpCallOptions parallelism(int n) { this.parallelism = n; return this; }
+
+        public McpCallOptions ordering(String o) {
+            if (o != null && !o.equals("PRESERVE_INPUT") && !o.equals("UNORDERED")) {
+                throw new IllegalArgumentException(
+                    "ordering must be PRESERVE_INPUT or UNORDERED, got '" + o + "'");
+            }
+            this.ordering = o; return this;
+        }
+
+        public McpCallOptions onFailure(String f) { this.onFailure = checkFailure(f); return this; }
+    }
+
+    /** B-112 — options for {@link #mlPredict(MlPredictOptions)}. */
+    public static final class MlPredictOptions {
+        String model;
+        List<String> inputFields;
+        String outputField;
+        Integer parallelism;
+        String ordering;
+        String onFailure;
+
+        public MlPredictOptions model(String m) { this.model = m; return this; }
+        public MlPredictOptions inputFields(List<String> f) { this.inputFields = f; return this; }
+        public MlPredictOptions outputField(String f) { this.outputField = f; return this; }
+        public MlPredictOptions parallelism(int n) { this.parallelism = n; return this; }
+
+        /** Must be {@code "PRESERVE_INPUT"} or {@code "UNORDERED"}. */
+        public MlPredictOptions ordering(String o) {
+            if (o != null && !o.equals("PRESERVE_INPUT") && !o.equals("UNORDERED")) {
+                throw new IllegalArgumentException(
+                    "ordering must be PRESERVE_INPUT or UNORDERED, got '" + o + "'");
+            }
+            this.ordering = o; return this;
+        }
+
+        /** Must be {@code "EMIT_ERROR"}, {@code "DROP"} or {@code "PASS_THROUGH"}. */
+        public MlPredictOptions onFailure(String f) { this.onFailure = checkFailure(f); return this; }
+    }
+
+    private static String checkFailure(String f) {
+        if (f != null && !f.equals("EMIT_ERROR") && !f.equals("DROP") && !f.equals("PASS_THROUGH")) {
+            throw new IllegalArgumentException(
+                "onFailure must be EMIT_ERROR, DROP or PASS_THROUGH, got '" + f + "'");
+        }
+        return f;
     }
 
     /** Options for {@link #broadcastJoin(BroadcastJoinOptions)}. */
