@@ -88,6 +88,29 @@ Map<String, Object> newPipeline = client.pipelines().create(Map.of(
 
 Full ~112-endpoint surface documented in Swagger UI at `<pulse-server>/api-docs`. Less-used methods land opportunistically as user-facing demand surfaces.
 
+## Embedded ML inference & duplex
+
+Score events with an uploaded ONNX model in-process (B-112), and open a
+bidirectional duplex channel for synchronous decisions (B-114). Full guide:
+[ML inference & duplex](https://github.com/olsisoft/pulse-java/blob/dev/docs/SDK-ML-INFERENCE-AND-DUPLEX.md).
+
+```java
+// Upload + score with an ONNX model (no model-server hop)
+client.models().upload(new PulseClient.ModelsResource.UploadOptions()
+        .name("fraud").path(Path.of("./fraud.onnx"))
+        .inputSchema(Map.of("amount", "float", "country", "float")));
+builder.fromTopic("transactions")
+    .mlPredict(new StreamBuilder.MlPredictOptions()
+        .model("fraud").inputFields(List.of("amount", "country")).outputField("prediction"))
+    .filter("prediction.fraud_score > 0.8").toTopic("flagged");
+
+// Duplex: one connection, send in / receive the correlated output (built-in WebSocket)
+try (DuplexChannel ch = client.duplex("fraud-detector")) {
+    String cid = ch.send(Map.of("amount", 5000), "tx-1");
+    Map<String, Object> signal = ch.recv();   // blocks for the correlated output
+}
+```
+
 ## Authentication
 
 ```java
