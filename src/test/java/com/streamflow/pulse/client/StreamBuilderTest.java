@@ -6,8 +6,12 @@ import com.streamflow.pulse.client.StreamBuilder.BroadcastJoinOptions;
 import com.streamflow.pulse.client.StreamBuilder.CdcJoinOptions;
 import com.streamflow.pulse.client.StreamBuilder.CepOptions;
 import com.streamflow.pulse.client.StreamBuilder.EnrichAsyncOptions;
+import com.streamflow.pulse.client.StreamBuilder.ExtractOptions;
 import com.streamflow.pulse.client.StreamBuilder.FromTopicOptions;
+import com.streamflow.pulse.client.StreamBuilder.MapLlmOptions;
 import com.streamflow.pulse.client.StreamBuilder.MapOptions;
+import com.streamflow.pulse.client.StreamBuilder.McpCallOptions;
+import com.streamflow.pulse.client.StreamBuilder.MlPredictOptions;
 import com.streamflow.pulse.client.StreamBuilder.ToTopicOptions;
 import com.streamflow.pulse.client.StreamBuilder.WindowOptions;
 import com.streamflow.pulse.client.StreamBuilder.WindowSpec;
@@ -349,6 +353,176 @@ class StreamBuilderTest {
         void cepRejectsEmptySequence() {
             assertThatThrownBy(() -> new StreamBuilder().fromTopic("in").cep(List.of()))
                 .hasMessageContaining("non-empty sequence");
+        }
+
+        @Test
+        void mapLlmFullShape() {
+            StreamBuilder b = new StreamBuilder().fromTopic("in").mapLlm(
+                "Summarise: {body}",
+                new MapLlmOptions().outputField("summary").model("gemma3:7b")
+                    .temperature(0.0).maxTokens(64).parallelism(8)
+                    .ordering("UNORDERED").onFailure("PASS_THROUGH").maxCallsPerSec(50));
+            Map<String, Object> expected = new LinkedHashMap<>();
+            expected.put("type", "mapLlm");
+            expected.put("prompt", "Summarise: {body}");
+            expected.put("outputField", "summary");
+            expected.put("model", "gemma3:7b");
+            expected.put("temperature", 0.0);
+            expected.put("maxTokens", 64);
+            expected.put("parallelism", 8);
+            expected.put("ordering", "UNORDERED");
+            expected.put("onFailure", "PASS_THROUGH");
+            expected.put("maxCallsPerSec", 50);
+            assertThat(b.operators()).containsExactly(expected);
+        }
+
+        @Test
+        void mapLlmRejectsBlankPromptOrOutputField() {
+            assertThatThrownBy(() -> new StreamBuilder().fromTopic("in")
+                .mapLlm("", new MapLlmOptions().outputField("x")))
+                .hasMessageContaining("prompt");
+            assertThatThrownBy(() -> new StreamBuilder().fromTopic("in")
+                .mapLlm("p", new MapLlmOptions().outputField("")))
+                .hasMessageContaining("outputField");
+        }
+
+        @Test
+        void mapLlmRejectsBadOrdering() {
+            assertThatThrownBy(() -> new MapLlmOptions().ordering("SHUFFLED"))
+                .hasMessageContaining("ordering");
+        }
+
+        @Test
+        void extractFullShape() {
+            StreamBuilder b = new StreamBuilder().fromTopic("in").extract(
+                new ExtractOptions()
+                    .instruction("Extract intent and urgency")
+                    .schema(Map.of("intent", "string", "urgency", "int"))
+                    .model("gemma3:7b").temperature(0.0));
+            Map<String, Object> op = b.operators().get(0);
+            assertThat(op.get("type")).isEqualTo("extract");
+            assertThat(op.get("instruction")).isEqualTo("Extract intent and urgency");
+            assertThat(op.get("schema")).isEqualTo(Map.of("intent", "string", "urgency", "int"));
+            assertThat(op.get("model")).isEqualTo("gemma3:7b");
+        }
+
+        @Test
+        void extractRejectsEmptySchema() {
+            assertThatThrownBy(() -> new StreamBuilder().fromTopic("in")
+                .extract(new ExtractOptions().instruction("x").schema(Map.of())))
+                .hasMessageContaining("schema");
+        }
+
+        @Test
+        void mcpCallFullShape() {
+            StreamBuilder b = new StreamBuilder().fromTopic("in").mcpCall(
+                "crm.lookup_customer",
+                new McpCallOptions()
+                    .args(Map.of("customer_id", "{customerId}"))
+                    .outputField("customer").parallelism(4)
+                    .ordering("UNORDERED").onFailure("EMIT_ERROR"));
+            Map<String, Object> expected = new LinkedHashMap<>();
+            expected.put("type", "mcpCall");
+            expected.put("tool", "crm.lookup_customer");
+            expected.put("args", Map.of("customer_id", "{customerId}"));
+            expected.put("outputField", "customer");
+            expected.put("parallelism", 4);
+            expected.put("ordering", "UNORDERED");
+            expected.put("onFailure", "EMIT_ERROR");
+            assertThat(b.operators()).containsExactly(expected);
+        }
+
+        @Test
+        void mcpCallMinimalFireAndForget() {
+            StreamBuilder b = new StreamBuilder().fromTopic("in").mcpCall("pagerduty.create_incident", null);
+            assertThat(b.operators()).containsExactly(
+                Map.of("type", "mcpCall", "tool", "pagerduty.create_incident"));
+        }
+
+        @Test
+        void mcpCallRejectsBlankTool() {
+            assertThatThrownBy(() -> new StreamBuilder().fromTopic("in").mcpCall("", null))
+                .hasMessageContaining("tool");
+        }
+
+        @Test
+        void mlPredictFullShape() {
+            StreamBuilder b = new StreamBuilder().fromTopic("in").mlPredict(new MlPredictOptions()
+                .model("fraud-classifier")
+                .inputFields(List.of("amount", "country"))
+                .outputField("prediction")
+                .parallelism(8)
+                .ordering("UNORDERED")
+                .onFailure("PASS_THROUGH"));
+            Map<String, Object> expected = new LinkedHashMap<>();
+            expected.put("type", "mlPredict");
+            expected.put("model", "fraud-classifier");
+            expected.put("inputFields", List.of("amount", "country"));
+            expected.put("outputField", "prediction");
+            expected.put("parallelism", 8);
+            expected.put("ordering", "UNORDERED");
+            expected.put("onFailure", "PASS_THROUGH");
+            assertThat(b.operators()).containsExactly(expected);
+        }
+
+        @Test
+        void mlPredictMinimalShape() {
+            StreamBuilder b = new StreamBuilder().fromTopic("in").mlPredict(new MlPredictOptions()
+                .model("scorer")
+                .inputFields(List.of("x"))
+                .outputField("y"));
+            Map<String, Object> expected = new LinkedHashMap<>();
+            expected.put("type", "mlPredict");
+            expected.put("model", "scorer");
+            expected.put("inputFields", List.of("x"));
+            expected.put("outputField", "y");
+            assertThat(b.operators()).containsExactly(expected);
+        }
+
+        @Test
+        void mlPredictRejectsBlankModel() {
+            assertThatThrownBy(() -> new StreamBuilder().fromTopic("in").mlPredict(new MlPredictOptions()
+                .model("").inputFields(List.of("x")).outputField("y")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("model");
+        }
+
+        @Test
+        void mlPredictRejectsBlankOutputField() {
+            assertThatThrownBy(() -> new StreamBuilder().fromTopic("in").mlPredict(new MlPredictOptions()
+                .model("m").inputFields(List.of("x")).outputField("")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("outputField");
+        }
+
+        @Test
+        void mlPredictRejectsEmptyInputFields() {
+            assertThatThrownBy(() -> new StreamBuilder().fromTopic("in").mlPredict(new MlPredictOptions()
+                .model("m").inputFields(List.of()).outputField("y")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("inputFields");
+        }
+
+        @Test
+        void mlPredictRejectsBlankInputField() {
+            assertThatThrownBy(() -> new StreamBuilder().fromTopic("in").mlPredict(new MlPredictOptions()
+                .model("m").inputFields(java.util.Arrays.asList("x", "  ")).outputField("y")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("inputFields");
+        }
+
+        @Test
+        void mlPredictRejectsBadOrdering() {
+            assertThatThrownBy(() -> new MlPredictOptions().ordering("SOMETHING"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("ordering");
+        }
+
+        @Test
+        void mlPredictRejectsBadOnFailure() {
+            assertThatThrownBy(() -> new MlPredictOptions().onFailure("RETRY"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("onFailure");
         }
 
         @Test
