@@ -156,6 +156,97 @@ public final class EventsResource {
         return resultFuture;
     }
 
+    /**
+     * B-113 — the changes that touched a state key between two instants.
+     *
+     * <p>{@code GET /api/pulse/iq/agents/{affectingState}/state/replay/{key}?from=&to=&limit=}.
+     * {@code affectingState} is the agent whose state store to inspect;
+     * {@code key} is the state key. {@code from} / {@code to} accept the same
+     * specs as {@link IQResource#get(String, String, String)} ({@code now}, a
+     * relative offset like {@code -1h}, an ISO-8601 instant, or epoch millis).
+     * Pass {@link ReplayOptions#defaults()} for the server defaults
+     * ({@code from=-1h}, {@code to=now}, {@code limit=100}).
+     *
+     * <p>Returns the ordered list of changes (the unwrapped {@code changes}
+     * field of the response), each carrying {@code timestamp},
+     * {@code changeType} ({@code PUT} / {@code DELETE}), the resulting
+     * {@code value}, and {@code eventId} when known:
+     *
+     * <pre>{@code
+     * List<Map<String, Object>> changes = client.events().replay(
+     *         "user-sessions", "u42",
+     *         EventsResource.ReplayOptions.builder()
+     *                 .from("2026-05-24T10:00:00Z").to("2026-05-24T11:00:00Z").build());
+     * }</pre>
+     *
+     * @throws PulseAuthException if no token is set.
+     * @throws com.streamflow.pulse.client.exceptions.PulseNotFoundException
+     *         when the agent is not queryable.
+     */
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> replay(String affectingState, String key, ReplayOptions options) {
+        String path = "/api/pulse/iq/agents/" + enc(affectingState)
+                + "/state/replay/" + enc(key) + options.toQuery();
+        Map<String, Object> result = client.request("GET", path, null, true);
+        Object changes = result.get("changes");
+        if (changes instanceof List<?> list) {
+            return (List<Map<String, Object>>) list;
+        }
+        return java.util.Collections.emptyList();
+    }
+
+    /** Convenience overload — replay with default range (from=-1h, to=now, limit=100). */
+    public List<Map<String, Object>> replay(String affectingState, String key) {
+        return replay(affectingState, key, ReplayOptions.defaults());
+    }
+
+    /** URL-encodes a path segment so values containing {@code /}, spaces, etc.
+     *  round-trip safely. Server's URLDecoder reverses this exactly. */
+    private static String enc(String segment) {
+        return java.net.URLEncoder.encode(segment, StandardCharsets.UTF_8).replace("+", "%20");
+    }
+
+    /**
+     * Optional {@code from} / {@code to} / {@code limit} for
+     * {@link EventsResource#replay}. All default to the server defaults
+     * ({@code from=-1h}, {@code to=now}, {@code limit=100}) and are always
+     * sent on the wire. Build via {@link #builder()} or use {@link #defaults()}.
+     */
+    public static final class ReplayOptions {
+        private static final ReplayOptions DEFAULTS = new ReplayOptions("-1h", "now", 100);
+
+        private final String from;
+        private final String to;
+        private final int limit;
+
+        private ReplayOptions(String from, String to, int limit) {
+            this.from = from;
+            this.to = to;
+            this.limit = limit;
+        }
+
+        public static ReplayOptions defaults() { return DEFAULTS; }
+
+        public static Builder builder() { return new Builder(); }
+
+        String toQuery() {
+            return "?from=" + java.net.URLEncoder.encode(from, StandardCharsets.UTF_8)
+                    + "&to=" + java.net.URLEncoder.encode(to, StandardCharsets.UTF_8)
+                    + "&limit=" + limit;
+        }
+
+        public static final class Builder {
+            private String from = "-1h";
+            private String to = "now";
+            private int limit = 100;
+
+            public Builder from(String from) { this.from = from; return this; }
+            public Builder to(String to) { this.to = to; return this; }
+            public Builder limit(int limit) { this.limit = limit; return this; }
+            public ReplayOptions build() { return new ReplayOptions(from, to, limit); }
+        }
+    }
+
     private static Map<String, Object> readErrorBody(
             HttpResponse<java.io.InputStream> response, ObjectMapper mapper) {
         try (BufferedReader reader = new BufferedReader(
