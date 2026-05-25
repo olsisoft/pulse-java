@@ -76,9 +76,66 @@ public final class IQResource {
      *         not-queryable cause.
      */
     public Map<String, Object> get(String agentId, String key) {
+        return get(agentId, key, null);
+    }
+
+    /**
+     * {@code GET /api/pulse/iq/agents/{id}/state/value/{key}?as_of=<spec>} —
+     * B-113 time-travel point lookup.
+     *
+     * <p>Reads the value as it was at a past instant instead of the live value.
+     * {@code asOf} accepts {@code now}, a relative offset ({@code -1h},
+     * {@code -30m}, {@code -7d}), an ISO-8601 instant, or epoch millis; a
+     * {@code null} {@code asOf} reads the live value (identical to
+     * {@link #get(String, String)}). The response then also carries
+     * {@code asOf} (the resolved epoch ms):
+     *
+     * <pre>{@code
+     * Map<String, Object> state1hAgo = client.iq().get("user-sessions", "u42", "-1h");
+     * }</pre>
+     *
+     * @throws PulseNotFoundException when the key is absent OR the agent is
+     *         not queryable (see {@link #get(String, String)}).
+     */
+    public Map<String, Object> get(String agentId, String key, String asOf) {
         String path = "/api/pulse/iq/agents/" + enc(agentId)
                 + "/state/value/" + enc(key);
+        if (asOf != null) {
+            path += "?as_of=" + URLEncoder.encode(asOf, StandardCharsets.UTF_8);
+        }
         return client.request("GET", path, null, true);
+    }
+
+    /**
+     * {@code GET /api/pulse/iq/agents/{id}/state/diff/{key}?from=&to=} —
+     * B-113 field-level state diff.
+     *
+     * <p>Returns the delta of {@code key}'s state between two instants. Both
+     * {@code from} and {@code to} accept the same specs as
+     * {@link #get(String, String, String)} ({@code now}, relative offset,
+     * ISO-8601, epoch millis). Pass {@link DiffOptions#defaults()} for the
+     * server defaults ({@code from=-1h}, {@code to=now}).
+     *
+     * <p>The returned map carries {@code agentId}, {@code key}, {@code fromTs},
+     * {@code toTs}, and {@code changes} — a map of each changed field to
+     * {@code {delta?, from, to}} ({@code delta} present for numeric fields),
+     * or {@code {added}} / {@code {removed}}:
+     *
+     * <pre>{@code
+     * Map<String, Object> d = client.iq().diff("user-sessions", "u42",
+     *         IQResource.DiffOptions.builder().from("-1h").to("now").build());
+     * // ((Map) d.get("changes")).get("cart_value") == {delta=70.0, from=0, to=70}
+     * }</pre>
+     */
+    public Map<String, Object> diff(String agentId, String key, DiffOptions options) {
+        String path = "/api/pulse/iq/agents/" + enc(agentId)
+                + "/state/diff/" + enc(key) + options.toQuery();
+        return client.request("GET", path, null, true);
+    }
+
+    /** Convenience overload — diff with default range (from=-1h, to=now). */
+    public Map<String, Object> diff(String agentId, String key) {
+        return diff(agentId, key, DiffOptions.defaults());
     }
 
     /**
@@ -147,6 +204,46 @@ public final class IQResource {
      *  round-trip safely. Server's URLDecoder reverses this exactly. */
     private static String enc(String segment) {
         return URLEncoder.encode(segment, StandardCharsets.UTF_8).replace("+", "%20");
+    }
+
+    // ------------------------------------------------------------------
+    // DiffOptions — from/to instant specs for /state/diff
+    // ------------------------------------------------------------------
+
+    /**
+     * Optional {@code from} / {@code to} instant specs for
+     * {@link IQResource#diff}. Both default to the server defaults
+     * ({@code from=-1h}, {@code to=now}) and are always sent on the wire.
+     * Build via {@link #builder()} or use {@link #defaults()}.
+     */
+    public static final class DiffOptions {
+        private static final DiffOptions DEFAULTS = new DiffOptions("-1h", "now");
+
+        private final String from;
+        private final String to;
+
+        private DiffOptions(String from, String to) {
+            this.from = from;
+            this.to = to;
+        }
+
+        public static DiffOptions defaults() { return DEFAULTS; }
+
+        public static Builder builder() { return new Builder(); }
+
+        String toQuery() {
+            return "?from=" + URLEncoder.encode(from, StandardCharsets.UTF_8)
+                    + "&to=" + URLEncoder.encode(to, StandardCharsets.UTF_8);
+        }
+
+        public static final class Builder {
+            private String from = "-1h";
+            private String to = "now";
+
+            public Builder from(String from) { this.from = from; return this; }
+            public Builder to(String to) { this.to = to; return this; }
+            public DiffOptions build() { return new DiffOptions(from, to); }
+        }
     }
 
     // ------------------------------------------------------------------
