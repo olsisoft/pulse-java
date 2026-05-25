@@ -13,6 +13,14 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.time.Duration;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -828,6 +836,327 @@ class PulseClientTest {
 
     // ------------------------------------------------------------------
     @Nested
+    @DisplayName("client.models() (B-112)")
+    class Models {
+
+        @Test
+        void accessorExists() {
+            assertThat(newClient().models()).isNotNull();
+        }
+
+        @Test
+        void uploadSendsMultipartWithFileAndTextFields() {
+            mockServer.stubFor(post("/api/pulse/ml-models")
+                    .withHeader("Content-Type", containing("multipart/form-data"))
+                    .withHeader("Content-Type", containing("boundary="))
+                    .willReturn(aResponse().withStatus(201)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("{\"name\":\"fraud-classifier\",\"runtime\":\"onnx\","
+                                    + "\"sha256\":\"abc123\",\"version\":1}")));
+
+            byte[] modelBytes = new byte[]{0x4f, 0x4e, 0x4e, 0x58, 0x00, 0x01}; // "ONNX.." marker
+            Map<String, Object> result = newAuthedClient().models().upload(
+                    new PulseClient.ModelsResource.UploadOptions()
+                            .name("fraud-classifier")
+                            .data(modelBytes)
+                            .inputSchema(Map.of("amount", "float", "country", "string"))
+                            .outputSchema(Map.of("fraud_score", "float")));
+
+            assertThat(result).containsEntry("name", "fraud-classifier");
+            assertThat(result).containsEntry("runtime", "onnx");
+
+            // Assert the multipart body shape: text parts + a file part named "model".
+            mockServer.verify(1, com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor(
+                            urlEqualTo("/api/pulse/ml-models"))
+                    .withRequestBody(containing("name=\"name\""))
+                    .withRequestBody(containing("fraud-classifier"))
+                    .withRequestBody(containing("name=\"runtime\""))
+                    .withRequestBody(containing("onnx"))
+                    .withRequestBody(containing("name=\"inputSchema\""))
+                    .withRequestBody(containing("name=\"outputSchema\""))
+                    .withRequestBody(containing("name=\"model\""))
+                    .withRequestBody(containing("filename="))
+                    .withRequestBody(containing("application/octet-stream")));
+        }
+
+        @Test
+        void uploadDefaultsRuntimeToOnnx() {
+            mockServer.stubFor(post("/api/pulse/ml-models")
+                    .willReturn(aResponse().withStatus(201)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("{\"name\":\"m\",\"runtime\":\"onnx\"}")));
+            newAuthedClient().models().upload(new PulseClient.ModelsResource.UploadOptions()
+                    .name("m").data(new byte[]{1, 2, 3}));
+            mockServer.verify(com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor(
+                            urlEqualTo("/api/pulse/ml-models"))
+                    .withRequestBody(containing("name=\"runtime\""))
+                    .withRequestBody(containing("onnx")));
+        }
+
+        @Test
+        void uploadRejectsBlankName() {
+            assertThatThrownBy(() -> newAuthedClient().models().upload(
+                    new PulseClient.ModelsResource.UploadOptions().data(new byte[]{1})))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("name");
+        }
+
+        @Test
+        void uploadRejectsBothPathAndData() {
+            assertThatThrownBy(() -> newAuthedClient().models().upload(
+                    new PulseClient.ModelsResource.UploadOptions()
+                            .name("m").data(new byte[]{1}).path(java.nio.file.Path.of("x.onnx"))))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("exactly one");
+        }
+
+        @Test
+        void uploadRejectsNeitherPathNorData() {
+            assertThatThrownBy(() -> newAuthedClient().models().upload(
+                    new PulseClient.ModelsResource.UploadOptions().name("m")))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("exactly one");
+        }
+
+        @Test
+        void uploadRejectsEmptyBytes() {
+            assertThatThrownBy(() -> newAuthedClient().models().upload(
+                    new PulseClient.ModelsResource.UploadOptions().name("m").data(new byte[0])))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("empty");
+        }
+
+        @Test
+        void uploadFromPathReadsFileBytes() throws Exception {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("pulse-model", ".onnx");
+            java.nio.file.Files.write(tmp, new byte[]{0x10, 0x20, 0x30});
+            try {
+                mockServer.stubFor(post("/api/pulse/ml-models")
+                        .willReturn(aResponse().withStatus(201)
+                                .withHeader("Content-Type", "application/json")
+                                .withBody("{\"name\":\"from-path\"}")));
+                Map<String, Object> result = newAuthedClient().models().upload(
+                        new PulseClient.ModelsResource.UploadOptions().name("from-path").path(tmp));
+                assertThat(result).containsEntry("name", "from-path");
+                mockServer.verify(com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor(
+                                urlEqualTo("/api/pulse/ml-models"))
+                        .withRequestBody(containing(tmp.getFileName().toString())));
+            } finally {
+                java.nio.file.Files.deleteIfExists(tmp);
+            }
+        }
+
+        @Test
+        void uploadWithoutTokenRaisesAuthBeforeHttp() {
+            assertThatThrownBy(() -> newClient().models().upload(
+                    new PulseClient.ModelsResource.UploadOptions().name("m").data(new byte[]{1})))
+                    .isInstanceOf(PulseAuthException.class);
+            mockServer.verify(0, com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor(
+                    urlEqualTo("/api/pulse/ml-models")));
+        }
+
+        @Test
+        void listUnwrapsEnvelope() {
+            mockServer.stubFor(get("/api/pulse/ml-models")
+                    .willReturn(aResponse().withStatus(200)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("{\"models\":[{\"name\":\"fraud-classifier\",\"runtime\":\"onnx\"}]}")));
+            List<Map<String, Object>> models = newAuthedClient().models().list();
+            assertThat(models).hasSize(1);
+            assertThat(models.get(0)).containsEntry("name", "fraud-classifier");
+        }
+
+        @Test
+        void listReturnsEmptyOnMissingEnvelope() {
+            mockServer.stubFor(get("/api/pulse/ml-models")
+                    .willReturn(aResponse().withStatus(200)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("{}")));
+            assertThat(newAuthedClient().models().list()).isEmpty();
+        }
+
+        @Test
+        void getReturnsOneModel() {
+            mockServer.stubFor(get("/api/pulse/ml-models/fraud-classifier")
+                    .willReturn(aResponse().withStatus(200)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("{\"name\":\"fraud-classifier\",\"version\":3}")));
+            assertThat(newAuthedClient().models().get("fraud-classifier"))
+                    .containsEntry("version", 3);
+        }
+
+        @Test
+        void getMissingModelRaisesNotFound() {
+            mockServer.stubFor(get("/api/pulse/ml-models/missing")
+                    .willReturn(aResponse().withStatus(404)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("{\"error\":\"Model not found\"}")));
+            assertThatThrownBy(() -> newAuthedClient().models().get("missing"))
+                    .isInstanceOf(PulseNotFoundException.class);
+        }
+
+        @Test
+        void getRejectsBlankName() {
+            assertThatThrownBy(() -> newAuthedClient().models().get(""))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("name");
+        }
+
+        @Test
+        void deleteReturnsCleanlyOn204() {
+            mockServer.stubFor(delete("/api/pulse/ml-models/fraud-classifier")
+                    .willReturn(aResponse().withStatus(204)));
+            newAuthedClient().models().delete("fraud-classifier"); // no throw = pass
+        }
+
+        @Test
+        void deleteRaisesNotFound() {
+            mockServer.stubFor(delete("/api/pulse/ml-models/missing")
+                    .willReturn(aResponse().withStatus(404)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("{\"error\":\"Model not found\"}")));
+            assertThatThrownBy(() -> newAuthedClient().models().delete("missing"))
+                    .isInstanceOf(PulseNotFoundException.class);
+        }
+
+        @Test
+        void pathParamIsUrlEncoded() {
+            mockServer.stubFor(get(urlEqualTo("/api/pulse/ml-models/my%20model"))
+                    .willReturn(aResponse().withStatus(200)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("{\"name\":\"my model\"}")));
+            assertThat(newAuthedClient().models().get("my model")).containsEntry("name", "my model");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    @Nested
+    @DisplayName("client.duplex() (B-114)")
+    class Duplex {
+
+        @Test
+        void deriveWsUrlHttpBumpsPortByOneAndUsesWsScheme() {
+            String url = DuplexChannel.deriveWsUrl("http://localhost:9090", "fraud", "ey.jwt");
+            assertThat(url).isEqualTo("ws://localhost:9091/api/pulse/agents/fraud/duplex?token=ey.jwt");
+        }
+
+        @Test
+        void deriveWsUrlHttpsUsesWssScheme() {
+            String url = DuplexChannel.deriveWsUrl("https://pulse.example.com:8443", "pricing", null);
+            assertThat(url).isEqualTo("wss://pulse.example.com:8444/api/pulse/agents/pricing/duplex");
+        }
+
+        @Test
+        void deriveWsUrlNoPortLeavesHostUntouched() {
+            String url = DuplexChannel.deriveWsUrl("http://pulse.local", "ab", null);
+            assertThat(url).isEqualTo("ws://pulse.local/api/pulse/agents/ab/duplex");
+        }
+
+        @Test
+        void deriveWsUrlEncodesAgentIdAndToken() {
+            String url = DuplexChannel.deriveWsUrl("http://h:1", "a b", "x/y+z");
+            assertThat(url).isEqualTo("ws://h:2/api/pulse/agents/a%20b/duplex?token=x%2Fy%2Bz");
+        }
+
+        @Test
+        void clientDuplexRejectsBlankAgentId() {
+            assertThatThrownBy(() -> newAuthedClient().duplex(""))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("agentId");
+        }
+
+        @Test
+        void dispatchOutputAttachesCorrelationId() {
+            Map<String, Object> msg = new HashMap<>();
+            msg.put("type", "output");
+            msg.put("correlationId", "tx-1");
+            msg.put("event", Map.of("id", "e1", "payload", Map.of("decision", "DENY")));
+            Map<String, Object> out = DuplexChannel.dispatch(msg, "ws://x");
+            assertThat(out).containsEntry("correlation_id", "tx-1");
+            assertThat(out).containsEntry("id", "e1");
+            assertThat(out).containsKey("payload");
+        }
+
+        @Test
+        void dispatchSkipsAckPongConnected() {
+            assertThat(DuplexChannel.dispatch(Map.of("type", "ack"), "ws://x")).isNull();
+            assertThat(DuplexChannel.dispatch(Map.of("type", "pong"), "ws://x")).isNull();
+            assertThat(DuplexChannel.dispatch(Map.of("type", "connected"), "ws://x")).isNull();
+        }
+
+        @Test
+        void dispatchErrorFrameThrowsApiException() {
+            Map<String, Object> msg = new HashMap<>();
+            msg.put("type", "error");
+            msg.put("error", "duplex disabled");
+            assertThatThrownBy(() -> DuplexChannel.dispatch(msg, "ws://x"))
+                    .isInstanceOf(PulseApiException.class);
+        }
+
+        @Test
+        void dispatchWrapsNonMapEventUnderValue() {
+            Map<String, Object> msg = new HashMap<>();
+            msg.put("type", "output");
+            msg.put("correlationId", "c1");
+            msg.put("event", "scalar-result");
+            Map<String, Object> out = DuplexChannel.dispatch(msg, "ws://x");
+            assertThat(out).containsEntry("value", "scalar-result");
+            assertThat(out).containsEntry("correlation_id", "c1");
+        }
+
+        @Test
+        void roundTripSendThenRecv() throws Exception {
+            // Spin up a minimal RFC6455 WebSocket server: handshake → send
+            // "connected" → echo each "send" as an "output" carrying the same
+            // correlationId. Exercises the full DuplexChannel I/O path.
+            try (StubWsServer server = StubWsServer.start()) {
+                String wsUrl = "ws://localhost:" + server.port() + "/api/pulse/agents/fraud/duplex";
+                java.net.http.HttpClient http = java.net.http.HttpClient.newHttpClient();
+                try (DuplexChannel ch = new DuplexChannel(
+                        wsUrl, http, new com.fasterxml.jackson.databind.ObjectMapper())) {
+                    String cid = ch.send(Map.of("amount", 5000), "tx-1");
+                    assertThat(cid).isEqualTo("tx-1");
+                    Map<String, Object> out = ch.recv(Duration.ofSeconds(5));
+                    assertThat(out).containsEntry("correlation_id", "tx-1");
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> payload = (Map<String, Object>) out.get("payload");
+                    assertThat(payload).containsEntry("amount", 5000);
+                }
+            }
+        }
+
+        @Test
+        void sendGeneratesUuidWhenNull() throws Exception {
+            try (StubWsServer server = StubWsServer.start()) {
+                String wsUrl = "ws://localhost:" + server.port() + "/api/pulse/agents/fraud/duplex";
+                java.net.http.HttpClient http = java.net.http.HttpClient.newHttpClient();
+                try (DuplexChannel ch = new DuplexChannel(
+                        wsUrl, http, new com.fasterxml.jackson.databind.ObjectMapper())) {
+                    String cid = ch.send(Map.of("k", "v"));
+                    assertThat(cid).isNotBlank();
+                    // Round-trips back with the generated id intact.
+                    Map<String, Object> out = ch.recv(Duration.ofSeconds(5));
+                    assertThat(out).containsEntry("correlation_id", cid);
+                }
+            }
+        }
+
+        @Test
+        void errorHandshakeFrameSurfacesAsApiException() throws Exception {
+            try (StubWsServer server = StubWsServer.startWithHandshakeError()) {
+                String wsUrl = "ws://localhost:" + server.port() + "/api/pulse/agents/missing/duplex";
+                java.net.http.HttpClient http = java.net.http.HttpClient.newHttpClient();
+                DuplexChannel ch = new DuplexChannel(
+                        wsUrl, http, new com.fasterxml.jackson.databind.ObjectMapper());
+                assertThatThrownBy(() -> ch.send(Map.of("k", "v")))
+                        .isInstanceOf(PulseApiException.class);
+                ch.close();
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    @Nested
     @DisplayName("error handling")
     class Errors {
 
@@ -902,6 +1231,166 @@ class PulseClientTest {
             newAuthedClient().pipelines().list();
             mockServer.verify(getRequestedFor(urlEqualTo("/api/pulse/pipelines"))
                     .withHeader("User-Agent", containing("pulse-client-java")));
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Minimal RFC6455 WebSocket stub server for the Duplex round-trip tests.
+    // WireMock doesn't speak the WebSocket upgrade, so we hand-roll the
+    // handshake + framing for one connection. It greets with a "connected"
+    // frame (or an "error" frame in the error variant), then echoes each
+    // inbound "send" frame back as an "output" frame with the same
+    // correlationId and a payload mirroring the input.
+    // ------------------------------------------------------------------
+    static final class StubWsServer implements AutoCloseable {
+        private static final String GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+        private final ServerSocket serverSocket;
+        private final Thread acceptThread;
+        private volatile Socket client;
+
+        private StubWsServer(boolean handshakeError) throws Exception {
+            this.serverSocket = new ServerSocket(0);
+            this.acceptThread = new Thread(() -> serve(handshakeError), "stub-ws-server");
+            this.acceptThread.setDaemon(true);
+            this.acceptThread.start();
+        }
+
+        static StubWsServer start() throws Exception {
+            return new StubWsServer(false);
+        }
+
+        static StubWsServer startWithHandshakeError() throws Exception {
+            return new StubWsServer(true);
+        }
+
+        int port() {
+            return serverSocket.getLocalPort();
+        }
+
+        private void serve(boolean handshakeError) {
+            try {
+                Socket s = serverSocket.accept();
+                this.client = s;
+                InputStream in = s.getInputStream();
+                OutputStream out = s.getOutputStream();
+
+                // --- HTTP upgrade handshake ---
+                StringBuilder header = new StringBuilder();
+                int prev = -1, cur;
+                String key = null;
+                while ((cur = in.read()) != -1) {
+                    header.append((char) cur);
+                    if (prev == '\n' && cur == '\n') break;       // blank-ish line
+                    if (header.toString().endsWith("\r\n\r\n")) break;
+                    prev = cur;
+                }
+                for (String line : header.toString().split("\r\n")) {
+                    if (line.toLowerCase().startsWith("sec-websocket-key:")) {
+                        key = line.substring(line.indexOf(':') + 1).trim();
+                    }
+                }
+                String accept = Base64.getEncoder().encodeToString(
+                        MessageDigest.getInstance("SHA-1")
+                                .digest((key + GUID).getBytes(StandardCharsets.UTF_8)));
+                String resp = "HTTP/1.1 101 Switching Protocols\r\n"
+                        + "Upgrade: websocket\r\n"
+                        + "Connection: Upgrade\r\n"
+                        + "Sec-WebSocket-Accept: " + accept + "\r\n\r\n";
+                out.write(resp.getBytes(StandardCharsets.UTF_8));
+                out.flush();
+
+                // --- greeting frame ---
+                if (handshakeError) {
+                    writeTextFrame(out, "{\"type\":\"error\",\"error\":\"duplex disabled\"}");
+                    return;
+                }
+                writeTextFrame(out, "{\"type\":\"connected\"}");
+
+                // --- echo loop ---
+                while (true) {
+                    String msg = readTextFrame(in);
+                    if (msg == null) break;
+                    com.fasterxml.jackson.databind.ObjectMapper m =
+                            new com.fasterxml.jackson.databind.ObjectMapper();
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> parsed = m.readValue(msg, Map.class);
+                    Object cid = parsed.get("correlationId");
+                    Object payload = parsed.get("payload");
+                    Map<String, Object> output = new HashMap<>();
+                    output.put("type", "output");
+                    output.put("correlationId", cid);
+                    Map<String, Object> event = new HashMap<>();
+                    event.put("id", "evt-" + cid);
+                    event.put("payload", payload);
+                    output.put("event", event);
+                    writeTextFrame(out, m.writeValueAsString(output));
+                }
+            } catch (Exception ignored) {
+                // Socket closed by the client at end of test — expected.
+            }
+        }
+
+        private static void writeTextFrame(OutputStream out, String text) throws Exception {
+            byte[] payload = text.getBytes(StandardCharsets.UTF_8);
+            out.write(0x81); // FIN + text opcode
+            if (payload.length < 126) {
+                out.write(payload.length);
+            } else if (payload.length < 65536) {
+                out.write(126);
+                out.write((payload.length >> 8) & 0xFF);
+                out.write(payload.length & 0xFF);
+            } else {
+                out.write(127);
+                for (int i = 7; i >= 0; i--) out.write((int) ((((long) payload.length) >> (8 * i)) & 0xFF));
+            }
+            out.write(payload);
+            out.flush();
+        }
+
+        private static String readTextFrame(InputStream in) throws Exception {
+            int b1 = in.read();
+            if (b1 == -1) return null;
+            int opcode = b1 & 0x0F;
+            int b2 = in.read();
+            if (b2 == -1) return null;
+            boolean masked = (b2 & 0x80) != 0;
+            long len = b2 & 0x7F;
+            if (len == 126) {
+                len = ((long) in.read() << 8) | in.read();
+            } else if (len == 127) {
+                len = 0;
+                for (int i = 0; i < 8; i++) len = (len << 8) | in.read();
+            }
+            byte[] mask = new byte[4];
+            if (masked) {
+                for (int i = 0; i < 4; i++) mask[i] = (byte) in.read();
+            }
+            byte[] data = new byte[(int) len];
+            int read = 0;
+            while (read < data.length) {
+                int r = in.read(data, read, data.length - read);
+                if (r == -1) break;
+                read += r;
+            }
+            if (masked) {
+                for (int i = 0; i < data.length; i++) data[i] ^= mask[i % 4];
+            }
+            if (opcode == 0x8) return null; // close frame
+            return new String(data, StandardCharsets.UTF_8);
+        }
+
+        @Override
+        public void close() {
+            try {
+                if (client != null) client.close();
+            } catch (Exception ignored) {
+                // best effort
+            }
+            try {
+                serverSocket.close();
+            } catch (Exception ignored) {
+                // best effort
+            }
         }
     }
 }
