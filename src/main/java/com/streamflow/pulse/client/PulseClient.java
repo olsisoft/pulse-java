@@ -73,7 +73,7 @@ import java.util.Optional;
  */
 public final class PulseClient implements AutoCloseable {
 
-    private static final String USER_AGENT = "pulse-client-java/2.6.0";
+    private static final String USER_AGENT = "pulse-client-java/2.6.1";
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
@@ -91,6 +91,8 @@ public final class PulseClient implements AutoCloseable {
     private final UsersResource users;
     private final EventsResource events;
     private final IQResource iq;
+    private final ModelsResource models;
+    private final ConnectorsResource connectors;
     private final StreamsResource streams;
 
     private PulseClient(Builder b) {
@@ -110,6 +112,8 @@ public final class PulseClient implements AutoCloseable {
         this.users = new UsersResource(this);
         this.events = new EventsResource(this);
         this.iq = new IQResource(this);
+        this.models = new ModelsResource(this);
+        this.connectors = new ConnectorsResource(this);
         this.streams = new StreamsResource(this);
     }
 
@@ -127,7 +131,40 @@ public final class PulseClient implements AutoCloseable {
     public UsersResource users() { return users; }
     public EventsResource events() { return events; }
     public IQResource iq() { return iq; }
+    public ModelsResource models() { return models; }
+    /** {@code client.connectors()} — the connector catalogue (B-093 family + every native/bridged connector). */
+    public ConnectorsResource connectors() { return connectors; }
     public StreamsResource streams() { return streams; }
+
+    /**
+     * B-114 — open a bidirectional duplex channel to an agent.
+     *
+     * <p>Returns a {@link DuplexChannel} that streams events IN and receives
+     * the agent's correlated outputs OUT on a single WebSocket — the
+     * synchronous-decision path (fraud, pricing, A/B assignment). The endpoint
+     * runs on the Pulse WebSocket port (REST port + 1); the URL is derived from
+     * the client's {@code baseUrl} with the JWT attached as a {@code token}
+     * query param.
+     *
+     * <p>The returned channel is {@link AutoCloseable} — use try-with-resources.
+     * The connection is opened (and the server's {@code connected} handshake
+     * awaited) lazily on the first {@link DuplexChannel#send} / blocking call,
+     * so callers can construct + configure before connecting.
+     *
+     * <pre>{@code
+     * try (DuplexChannel ch = client.duplex("fraud-detector")) {
+     *     String cid = ch.send(Map.of("amount", 5000), "tx-1");
+     *     Map<String, Object> out = ch.recv();   // out.get("correlation_id") == "tx-1"
+     * }
+     * }</pre>
+     */
+    public DuplexChannel duplex(String agentId) {
+        if (agentId == null || agentId.isBlank()) {
+            throw new IllegalArgumentException("agentId must be a non-empty string");
+        }
+        String url = DuplexChannel.deriveWsUrl(baseUrl, agentId, token);
+        return new DuplexChannel(url, http, mapper);
+    }
 
     // ------------------------------------------------------------------
     // Internal accessors used by EventsResource for SSE streaming. Package-
@@ -232,6 +269,98 @@ public final class PulseClient implements AutoCloseable {
 
         // Non-2xx — translate to a typed exception
         throw translateError(status, path, response, responseBody);
+    }
+
+    /**
+     * Issues a {@code multipart/form-data} POST and translates errors. Used by
+     * {@link ModelsResource#upload}. {@code fileFieldName} names the binary
+     * part; {@code formFields} are emitted as text parts in insertion order.
+     */
+    Map<String, Object> requestMultipart(String method, String path, String fileFieldName,
+                                         String fileName, byte[] fileBytes,
+                                         Map<String, String> formFields) {
+        if (token == null || token.isEmpty()) {
+            Map<String, Object> err = Map.of(
+                    "error",
+                    "No token set. Call client.auth().login(...) first or pass .token(...) to the builder.");
+            throw new PulseAuthException(401, path, err);
+        }
+
+        String boundary = "----PulseJavaBoundary" + Long.toHexString(System.nanoTime());
+        byte[] payload = buildMultipartBody(boundary, fileFieldName, fileName, fileBytes, formFields);
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + path))
+                .timeout(timeout)
+                .header("User-Agent", USER_AGENT)
+                .header("Accept", "application/json")
+                .header("Authorization", "Bearer " + token)
+                .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                .method(method, HttpRequest.BodyPublishers.ofByteArray(payload))
+                .build();
+
+        HttpResponse<String> response;
+        try {
+            response = http.send(request, HttpResponse.BodyHandlers.ofString());
+        } catch (IOException e) {
+            throw new PulseClientException("HTTP transport failure on " + method + " " + path, e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new PulseClientException("Interrupted while calling " + method + " " + path, e);
+        }
+
+        int status = response.statusCode();
+        String responseBody = response.body();
+
+        if (status == 204) {
+            return Collections.emptyMap();
+        }
+        if (status >= 200 && status < 300) {
+            if (responseBody == null || responseBody.isEmpty()) {
+                return Collections.emptyMap();
+            }
+            try {
+                Map<String, Object> parsed = mapper.readValue(responseBody, MAP_TYPE);
+                return parsed != null ? parsed : Collections.emptyMap();
+            } catch (IOException e) {
+                throw new PulseClientException(
+                        "Failed to parse JSON response from " + method + " " + path, e);
+            }
+        }
+        throw translateError(status, path, response, responseBody);
+    }
+
+    private static byte[] buildMultipartBody(String boundary, String fileFieldName, String fileName,
+                                             byte[] fileBytes, Map<String, String> formFields) {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        java.nio.charset.Charset utf8 = java.nio.charset.StandardCharsets.UTF_8;
+        String dashBoundary = "--" + boundary + "\r\n";
+        try {
+            // Text fields first (insertion order preserved by LinkedHashMap).
+            if (formFields != null) {
+                for (Map.Entry<String, String> e : formFields.entrySet()) {
+                    if (e.getValue() == null) continue;
+                    out.write(dashBoundary.getBytes(utf8));
+                    out.write(("Content-Disposition: form-data; name=\"" + e.getKey() + "\"\r\n\r\n")
+                            .getBytes(utf8));
+                    out.write(e.getValue().getBytes(utf8));
+                    out.write("\r\n".getBytes(utf8));
+                }
+            }
+            // Binary file part.
+            out.write(dashBoundary.getBytes(utf8));
+            out.write(("Content-Disposition: form-data; name=\"" + fileFieldName
+                    + "\"; filename=\"" + fileName + "\"\r\n").getBytes(utf8));
+            out.write("Content-Type: application/octet-stream\r\n\r\n".getBytes(utf8));
+            out.write(fileBytes);
+            out.write("\r\n".getBytes(utf8));
+            // Closing boundary.
+            out.write(("--" + boundary + "--\r\n").getBytes(utf8));
+        } catch (IOException e) {
+            // ByteArrayOutputStream never throws — guard for completeness.
+            throw new PulseClientException("Failed to assemble multipart body", e);
+        }
+        return out.toByteArray();
     }
 
     private PulseApiException translateError(int status, String path, HttpResponse<String> response,
@@ -437,6 +566,40 @@ public final class PulseClient implements AutoCloseable {
         }
     }
 
+    /**
+     * {@code client.connectors()} — the connector catalogue (the B-093 analytics
+     * family + every native / bridged connector), the same list the Pipeline
+     * Studio palette and {@code pulse connectors list} show. Each entry is
+     * {@code {subType, displayName, configFields}}; use the {@code subType} as a
+     * sink/source node {@code type} in a pipeline definition deployed via
+     * {@code client.pipelines().deploy(...)}. Bridged connectors appear only when
+     * the enterprise bridge JAR is on the server classpath.
+     */
+    public static final class ConnectorsResource {
+        private final PulseClient client;
+        ConnectorsResource(PulseClient client) { this.client = client; }
+
+        /** {@code GET /api/pulse/connectors} — {@code {"sources": [...], "sinks": [...]}}. */
+        public Map<String, Object> list() {
+            return client.request("GET", "/api/pulse/connectors", null, true);
+        }
+
+        /** Just the sink connectors. */
+        public List<Map<String, Object>> sinks() { return entries("sinks"); }
+
+        /** Just the source connectors. */
+        public List<Map<String, Object>> sources() { return entries("sources"); }
+
+        @SuppressWarnings("unchecked")
+        private List<Map<String, Object>> entries(String kind) {
+            Object value = list().get(kind);
+            if (value instanceof List<?> list) {
+                return (List<Map<String, Object>>) list;
+            }
+            return Collections.emptyList();
+        }
+    }
+
     /** {@code client.templates()} — first-party pipeline template catalog. */
     public static final class TemplatesResource {
         private final PulseClient client;
@@ -472,6 +635,143 @@ public final class PulseClient implements AutoCloseable {
                 return (List<Map<String, Object>>) list;
             }
             return Collections.emptyList();
+        }
+    }
+
+    /**
+     * {@code client.models()} — B-112 embedded ML model registry.
+     *
+     * <p>Upload ONNX models that the streaming {@code mlPredict} operator scores
+     * events against, in-process on the Pulse engine (no model-server hop).
+     * Models are org-scoped; upload / delete require the ADMIN role.
+     *
+     * <pre>{@code
+     * client.models().upload(new PulseClient.ModelsResource.UploadOptions()
+     *         .name("fraud-classifier")
+     *         .path(Path.of("./model.onnx"))
+     *         .inputSchema(Map.of("amount", "float", "country", "string"))
+     *         .outputSchema(Map.of("fraud_score", "float", "label", "string")));
+     *
+     * builder.fromTopic("transactions").mlPredict(new StreamBuilder.MlPredictOptions()
+     *         .model("fraud-classifier")
+     *         .inputFields(List.of("amount", "country"))
+     *         .outputField("prediction")).toTopic("scored");
+     * }</pre>
+     */
+    public static final class ModelsResource {
+        private final PulseClient client;
+        ModelsResource(PulseClient client) { this.client = client; }
+
+        /**
+         * {@code POST /api/pulse/ml-models} — upload (or replace) a model as
+         * {@code multipart/form-data}: a binary {@code model} part plus text
+         * fields {@code name}, {@code runtime}, and (when set) {@code inputSchema}
+         * / {@code outputSchema} (each a JSON object string).
+         *
+         * <p>Supply the model bytes either by {@link UploadOptions#path(Path)} or
+         * {@link UploadOptions#data(byte[])}. Replacing an existing name
+         * hot-swaps the model with no agent restart.
+         *
+         * @return the persisted model metadata (name, runtime, sha256, version, …).
+         */
+        public Map<String, Object> upload(UploadOptions options) {
+            Objects.requireNonNull(options, "options");
+            if (options.name == null || options.name.isBlank()) {
+                throw new IllegalArgumentException("name must be a non-empty string");
+            }
+            if ((options.path == null) == (options.data == null)) {
+                throw new IllegalArgumentException("provide exactly one of 'path' or 'data'");
+            }
+
+            byte[] blob;
+            String fileName;
+            if (options.path != null) {
+                try {
+                    blob = java.nio.file.Files.readAllBytes(options.path);
+                } catch (IOException e) {
+                    throw new PulseClientException(
+                            "Failed to read model file " + options.path, e);
+                }
+                java.nio.file.Path fn = options.path.getFileName();
+                fileName = fn != null ? fn.toString() : options.name + ".onnx";
+            } else {
+                blob = options.data;
+                fileName = options.name + ".onnx";
+            }
+            if (blob.length == 0) {
+                throw new IllegalArgumentException("model bytes are empty");
+            }
+
+            String runtime = options.runtime != null ? options.runtime : "onnx";
+            Map<String, String> form = new java.util.LinkedHashMap<>();
+            form.put("name", options.name);
+            form.put("runtime", runtime);
+            ObjectMapper mapper = client.mapperInternal();
+            try {
+                if (options.inputSchema != null) {
+                    form.put("inputSchema", mapper.writeValueAsString(options.inputSchema));
+                }
+                if (options.outputSchema != null) {
+                    form.put("outputSchema", mapper.writeValueAsString(options.outputSchema));
+                }
+            } catch (IOException e) {
+                throw new PulseClientException("Failed to serialise model schema", e);
+            }
+
+            return client.requestMultipart(
+                    "POST", "/api/pulse/ml-models", "model", fileName, blob, form);
+        }
+
+        /** {@code GET /api/pulse/ml-models} — models registered for the caller's org. */
+        @SuppressWarnings("unchecked")
+        public List<Map<String, Object>> list() {
+            Map<String, Object> result = client.request("GET", "/api/pulse/ml-models", null, true);
+            Object models = result.get("models");
+            if (models instanceof List<?> list) {
+                return (List<Map<String, Object>>) list;
+            }
+            return Collections.emptyList();
+        }
+
+        /** {@code GET /api/pulse/ml-models/{name}} — metadata for one model. */
+        public Map<String, Object> get(String name) {
+            requireModelName(name);
+            return client.request("GET", "/api/pulse/ml-models/" + encode(name), null, true);
+        }
+
+        /** {@code DELETE /api/pulse/ml-models/{name}} — remove a model (ADMIN). */
+        public void delete(String name) {
+            requireModelName(name);
+            client.request("DELETE", "/api/pulse/ml-models/" + encode(name), null, true);
+        }
+
+        private static void requireModelName(String name) {
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("name must be a non-empty string");
+            }
+        }
+
+        /** Options for {@link #upload(UploadOptions)}. Exactly one of path / data is required. */
+        public static final class UploadOptions {
+            String name;
+            java.nio.file.Path path;
+            byte[] data;
+            String runtime;
+            Map<String, String> inputSchema;
+            Map<String, String> outputSchema;
+
+            /** Model name referenced by {@code mlPredict(model=...)}. Required. */
+            public UploadOptions name(String name) { this.name = name; return this; }
+            /** Filesystem path to the {@code .onnx} file (alternative to {@link #data}). */
+            public UploadOptions path(java.nio.file.Path path) { this.path = path; return this; }
+            /** Raw model bytes (alternative to {@link #path}). */
+            public UploadOptions data(byte[] data) { this.data = data; return this; }
+            /** Model runtime — only {@code "onnx"} is supported today. Defaults to {@code "onnx"}. */
+            public UploadOptions runtime(String runtime) { this.runtime = runtime; return this; }
+            /** Ordered feature-name → type map used to pack the input tensor. */
+            public UploadOptions inputSchema(Map<String, String> s) { this.inputSchema = s; return this; }
+            /** Output-name → type map (informational). */
+            public UploadOptions outputSchema(Map<String, String> s) { this.outputSchema = s; return this; }
         }
     }
 
