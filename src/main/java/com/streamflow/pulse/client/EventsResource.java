@@ -86,7 +86,7 @@ public final class EventsResource {
                 .header("Authorization", "Bearer " + token)
                 .header("Accept", "text/event-stream")
                 .header("Cache-Control", "no-cache")
-                .header("User-Agent", "pulse-client-java/2.6.0")
+                .header("User-Agent", "pulse-client-java/2.7.5")
                 .GET()
                 .build();
 

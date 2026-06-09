@@ -75,7 +75,7 @@ import java.util.Set;
  */
 public final class PulseClient implements AutoCloseable {
 
-    private static final String USER_AGENT = "pulse-client-java/2.6.1";
+    private static final String USER_AGENT = "pulse-client-java/2.7.5";
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
@@ -567,7 +567,8 @@ public final class PulseClient implements AutoCloseable {
         }
 
         private void cacheToken(Map<String, Object> response) {
-            Object token = response.get("token");
+            Object token = response.get("accessToken");
+            if (!(token instanceof String)) token = response.get("token");
             if (token instanceof String s && !s.isEmpty()) {
                 client.setToken(s);
             }

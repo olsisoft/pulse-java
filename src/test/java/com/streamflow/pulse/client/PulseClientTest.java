@@ -145,7 +145,7 @@ class PulseClientTest {
                     .withRequestBody(equalToJson("{\"username\":\"alice\",\"password\":\"secret\"}"))
                     .willReturn(aResponse().withStatus(200)
                             .withHeader("Content-Type", "application/json")
-                            .withBody("{\"token\":\"new.jwt.token\","
+                            .withBody("{\"accessToken\":\"new.jwt.token\","
                                     + "\"refreshToken\":\"refresh.token\","
                                     + "\"activeOrg\":{\"id\":\"org1\",\"name\":\"Acme\"}}")));
             PulseClient client = newClient();
