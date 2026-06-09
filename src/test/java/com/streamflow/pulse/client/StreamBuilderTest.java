@@ -14,6 +14,7 @@ import com.streamflow.pulse.client.StreamBuilder.McpCallOptions;
 import com.streamflow.pulse.client.StreamBuilder.MlPredictOptions;
 import com.streamflow.pulse.client.StreamBuilder.ToTopicOptions;
 import com.streamflow.pulse.client.StreamBuilder.WindowOptions;
+import com.streamflow.pulse.client.StreamBuilder.WasmOptions;
 import com.streamflow.pulse.client.StreamBuilder.WindowSpec;
 import com.streamflow.pulse.client.StreamBuilder.Windows;
 import org.junit.jupiter.api.DisplayName;
@@ -521,6 +522,51 @@ class StreamBuilderTest {
         @Test
         void mlPredictRejectsBadOnFailure() {
             assertThatThrownBy(() -> new MlPredictOptions().onFailure("RETRY"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("onFailure");
+        }
+
+        // ── B-110 wasm ────────────────────────────────────────────────
+
+        @Test
+        void wasmFullShape() {
+            StreamBuilder b = new StreamBuilder().fromTopic("events").wasm(new WasmOptions()
+                .module("pii-redactor")
+                .parallelism(4)
+                .ordering("UNORDERED")
+                .onFailure("DROP"));
+            Map<String, Object> expected = new LinkedHashMap<>();
+            expected.put("type", "wasm");
+            expected.put("module", "pii-redactor");
+            expected.put("parallelism", 4);
+            expected.put("ordering", "UNORDERED");
+            expected.put("onFailure", "DROP");
+            assertThat(b.operators()).containsExactly(expected);
+        }
+
+        @Test
+        void wasmMinimalShape() {
+            StreamBuilder b = new StreamBuilder().fromTopic("in").wasm(new WasmOptions().module("m"));
+            assertThat(b.operators()).containsExactly(Map.of("type", "wasm", "module", "m"));
+        }
+
+        @Test
+        void wasmRejectsBlankModule() {
+            assertThatThrownBy(() -> new StreamBuilder().fromTopic("in").wasm(new WasmOptions().module("")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("module");
+        }
+
+        @Test
+        void wasmRejectsBadOrdering() {
+            assertThatThrownBy(() -> new WasmOptions().ordering("SOMETHING"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("ordering");
+        }
+
+        @Test
+        void wasmRejectsBadOnFailure() {
+            assertThatThrownBy(() -> new WasmOptions().onFailure("NOPE"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("onFailure");
         }
