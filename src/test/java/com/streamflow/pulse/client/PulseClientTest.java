@@ -1210,6 +1210,317 @@ class PulseClientTest {
 
     // ------------------------------------------------------------------
     @Nested
+    @DisplayName("client.wasm() (B-110)")
+    class Wasm {
+
+        /** A conforming module: magic+version, no imports, exports alloc/process/memory. */
+        private final byte[] VALID_WASM = hex(
+                "00 61 73 6d 01 00 00 00  07 1c  01"
+                + "  05 61 6c 6c 6f 63 00 00"
+                + "  07 70 72 6f 63 65 73 73 00 00"
+                + "  06 6d 65 6d 6f 72 79 02 00");
+
+        /** Imports a host function — must be rejected as not-a-pure-sandbox. */
+        private final byte[] WASM_WITH_IMPORT = hex(
+                "00 61 73 6d 01 00 00 00  02 09 01 03 65 6e 76 01 66 00 00"
+                + "  07 1c 01 05 61 6c 6c 6f 63 00 00 07 70 72 6f 63 65 73 73 00 00"
+                + "  06 6d 65 6d 6f 72 79 02 00");
+
+        /** Valid magic but the export section lists only alloc (no process / memory). */
+        private final byte[] WASM_MISSING_EXPORT = hex(
+                "00 61 73 6d 01 00 00 00  07 09 01 05 61 6c 6c 6f 63 00 00");
+
+        @Test
+        void accessorExists() {
+            assertThat(newClient().wasm()).isNotNull();
+        }
+
+        @Test
+        void uploadSendsMultipartWithFileAndTextFields() {
+            mockServer.stubFor(post("/api/pulse/wasm-modules")
+                    .withHeader("Content-Type", containing("multipart/form-data"))
+                    .withHeader("Content-Type", containing("boundary="))
+                    .willReturn(aResponse().withStatus(201)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("{\"name\":\"redactor\",\"sha256\":\"abc123\",\"version\":1}")));
+
+            byte[] moduleBytes = VALID_WASM; // conforming module: exports alloc/process/memory, no imports
+            Map<String, Object> result = newAuthedClient().wasm().upload(
+                    new PulseClient.WasmResource.UploadOptions()
+                            .name("redactor")
+                            .data(moduleBytes)
+                            .description("pii"));
+
+            assertThat(result).containsEntry("name", "redactor");
+            assertThat(result).containsEntry("version", 1);
+
+            mockServer.verify(1, com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor(
+                            urlEqualTo("/api/pulse/wasm-modules"))
+                    .withRequestBody(containing("name=\"name\""))
+                    .withRequestBody(containing("redactor"))
+                    .withRequestBody(containing("name=\"description\""))
+                    .withRequestBody(containing("pii"))
+                    .withRequestBody(containing("name=\"module\""))
+                    .withRequestBody(containing("filename="))
+                    .withRequestBody(containing("application/octet-stream")));
+        }
+
+        @Test
+        void uploadWithoutDescriptionOmitsField() {
+            mockServer.stubFor(post("/api/pulse/wasm-modules")
+                    .willReturn(aResponse().withStatus(201)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("{\"name\":\"m\"}")));
+            newAuthedClient().wasm().upload(new PulseClient.WasmResource.UploadOptions()
+                    .name("m").data(VALID_WASM));
+            mockServer.verify(com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor(
+                            urlEqualTo("/api/pulse/wasm-modules"))
+                    .withRequestBody(containing("name=\"name\""))
+                    .withRequestBody(com.github.tomakehurst.wiremock.client.WireMock.notContaining(
+                            "name=\"description\"")));
+        }
+
+        @Test
+        void uploadRejectsBlankName() {
+            assertThatThrownBy(() -> newAuthedClient().wasm().upload(
+                    new PulseClient.WasmResource.UploadOptions().data(new byte[]{1})))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("name");
+        }
+
+        @Test
+        void uploadRejectsBothPathAndData() {
+            assertThatThrownBy(() -> newAuthedClient().wasm().upload(
+                    new PulseClient.WasmResource.UploadOptions()
+                            .name("m").data(new byte[]{1}).path(java.nio.file.Path.of("x.wasm"))))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("exactly one");
+        }
+
+        @Test
+        void uploadRejectsNeitherPathNorData() {
+            assertThatThrownBy(() -> newAuthedClient().wasm().upload(
+                    new PulseClient.WasmResource.UploadOptions().name("m")))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("exactly one");
+        }
+
+        @Test
+        void uploadRejectsEmptyBytes() {
+            assertThatThrownBy(() -> newAuthedClient().wasm().upload(
+                    new PulseClient.WasmResource.UploadOptions().name("m").data(new byte[0])))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("empty");
+        }
+
+        @Test
+        void uploadFromPathReadsFileBytes() throws Exception {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("pulse-wasm", ".wasm");
+            java.nio.file.Files.write(tmp, VALID_WASM);
+            try {
+                mockServer.stubFor(post("/api/pulse/wasm-modules")
+                        .willReturn(aResponse().withStatus(201)
+                                .withHeader("Content-Type", "application/json")
+                                .withBody("{\"name\":\"from-path\"}")));
+                Map<String, Object> result = newAuthedClient().wasm().upload(
+                        new PulseClient.WasmResource.UploadOptions().name("from-path").path(tmp));
+                assertThat(result).containsEntry("name", "from-path");
+                mockServer.verify(com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor(
+                                urlEqualTo("/api/pulse/wasm-modules"))
+                        .withRequestBody(containing(tmp.getFileName().toString())));
+            } finally {
+                java.nio.file.Files.deleteIfExists(tmp);
+            }
+        }
+
+        @Test
+        void uploadWithoutTokenRaisesAuthBeforeHttp() {
+            assertThatThrownBy(() -> newClient().wasm().upload(
+                    new PulseClient.WasmResource.UploadOptions().name("m").data(VALID_WASM)))
+                    .isInstanceOf(PulseAuthException.class);
+            mockServer.verify(0, com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor(
+                    urlEqualTo("/api/pulse/wasm-modules")));
+        }
+
+        @Test
+        void listUnwrapsEnvelope() {
+            mockServer.stubFor(get("/api/pulse/wasm-modules")
+                    .willReturn(aResponse().withStatus(200)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("{\"modules\":[{\"name\":\"redactor\",\"version\":1}]}")));
+            List<Map<String, Object>> modules = newAuthedClient().wasm().list();
+            assertThat(modules).hasSize(1);
+            assertThat(modules.get(0)).containsEntry("name", "redactor");
+        }
+
+        @Test
+        void listReturnsEmptyOnMissingEnvelope() {
+            mockServer.stubFor(get("/api/pulse/wasm-modules")
+                    .willReturn(aResponse().withStatus(200)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("{}")));
+            assertThat(newAuthedClient().wasm().list()).isEmpty();
+        }
+
+        @Test
+        void getReturnsOneModule() {
+            mockServer.stubFor(get("/api/pulse/wasm-modules/redactor")
+                    .willReturn(aResponse().withStatus(200)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("{\"name\":\"redactor\",\"version\":2}")));
+            assertThat(newAuthedClient().wasm().get("redactor")).containsEntry("version", 2);
+        }
+
+        @Test
+        void getMissingModuleRaisesNotFound() {
+            mockServer.stubFor(get("/api/pulse/wasm-modules/missing")
+                    .willReturn(aResponse().withStatus(404)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("{\"error\":\"Module not found\"}")));
+            assertThatThrownBy(() -> newAuthedClient().wasm().get("missing"))
+                    .isInstanceOf(PulseNotFoundException.class);
+        }
+
+        @Test
+        void getRejectsBlankName() {
+            assertThatThrownBy(() -> newAuthedClient().wasm().get(""))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("name");
+        }
+
+        @Test
+        void deleteReturnsCleanlyOn204() {
+            mockServer.stubFor(delete("/api/pulse/wasm-modules/redactor")
+                    .willReturn(aResponse().withStatus(204)));
+            newAuthedClient().wasm().delete("redactor"); // no throw = pass
+        }
+
+        @Test
+        void deleteRaisesNotFound() {
+            mockServer.stubFor(delete("/api/pulse/wasm-modules/missing")
+                    .willReturn(aResponse().withStatus(404)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("{\"error\":\"Module not found\"}")));
+            assertThatThrownBy(() -> newAuthedClient().wasm().delete("missing"))
+                    .isInstanceOf(PulseNotFoundException.class);
+        }
+
+        @Test
+        void pathParamIsUrlEncoded() {
+            mockServer.stubFor(get(urlEqualTo("/api/pulse/wasm-modules/my%20module"))
+                    .willReturn(aResponse().withStatus(200)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("{\"name\":\"my module\"}")));
+            assertThat(newAuthedClient().wasm().get("my module")).containsEntry("name", "my module");
+        }
+
+        // ---- B-110 client-side pre-upload module validation ----
+
+        @Test
+        void validateAcceptsConformingModule() {
+            // No throw == pass.
+            PulseClient.WasmResource.validateWasmModule(VALID_WASM);
+        }
+
+        @Test
+        void validateRejectsEmptyModule() {
+            assertThatThrownBy(() -> PulseClient.WasmResource.validateWasmModule(new byte[0]))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("too short");
+        }
+
+        @Test
+        void validateRejectsTooShortModule() {
+            assertThatThrownBy(() -> PulseClient.WasmResource.validateWasmModule(
+                    new byte[]{0x00, 0x61, 0x73}))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("too short");
+        }
+
+        @Test
+        void validateRejectsNullModule() {
+            assertThatThrownBy(() -> PulseClient.WasmResource.validateWasmModule(null))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("too short");
+        }
+
+        @Test
+        void validateRejectsBadMagic() {
+            byte[] badMagic = hex("de ad be ef 01 00 00 00");
+            assertThatThrownBy(() -> PulseClient.WasmResource.validateWasmModule(badMagic))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("bad magic/version");
+        }
+
+        @Test
+        void validateRejectsBadVersion() {
+            byte[] badVersion = hex("00 61 73 6d 02 00 00 00");
+            assertThatThrownBy(() -> PulseClient.WasmResource.validateWasmModule(badVersion))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("bad magic/version");
+        }
+
+        @Test
+        void validateRejectsModuleThatImportsHostFunctions() {
+            assertThatThrownBy(() -> PulseClient.WasmResource.validateWasmModule(WASM_WITH_IMPORT))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("imports host functions");
+        }
+
+        @Test
+        void validateRejectsModuleMissingRequiredExports() {
+            assertThatThrownBy(() -> PulseClient.WasmResource.validateWasmModule(WASM_MISSING_EXPORT))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("must export alloc, process and memory");
+        }
+
+        @Test
+        void uploadRejectsImportingModuleWithoutAnyHttpCall() {
+            // A token is set so the upload would otherwise reach the network; the
+            // validation must fire first and prevent any HTTP request.
+            assertThatThrownBy(() -> newAuthedClient().wasm().upload(
+                    new PulseClient.WasmResource.UploadOptions().name("evil").data(WASM_WITH_IMPORT)))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("imports host functions");
+            mockServer.verify(0, com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor(
+                    urlEqualTo("/api/pulse/wasm-modules")));
+        }
+
+        @Test
+        void uploadRejectsModuleMissingExportsWithoutAnyHttpCall() {
+            assertThatThrownBy(() -> newAuthedClient().wasm().upload(
+                    new PulseClient.WasmResource.UploadOptions()
+                            .name("partial").data(WASM_MISSING_EXPORT)))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("must export alloc, process and memory");
+            mockServer.verify(0, com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor(
+                    urlEqualTo("/api/pulse/wasm-modules")));
+        }
+
+        @Test
+        void uploadRejectsBadMagicWithoutAnyHttpCall() {
+            assertThatThrownBy(() -> newAuthedClient().wasm().upload(
+                    new PulseClient.WasmResource.UploadOptions()
+                            .name("garbage").data(hex("de ad be ef 01 00 00 00"))))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("bad magic/version");
+            mockServer.verify(0, com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor(
+                    urlEqualTo("/api/pulse/wasm-modules")));
+        }
+
+        /** Builds a byte[] from a whitespace-separated hex string, masking each byte. */
+        private byte[] hex(String spec) {
+            String[] tokens = spec.trim().split("\\s+");
+            byte[] out = new byte[tokens.length];
+            for (int i = 0; i < tokens.length; i++) {
+                out[i] = (byte) (Integer.parseInt(tokens[i], 16) & 0xFF);
+            }
+            return out;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    @Nested
     @DisplayName("client.duplex() (B-114)")
     class Duplex {
 

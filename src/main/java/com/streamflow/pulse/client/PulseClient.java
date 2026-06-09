@@ -18,9 +18,11 @@ import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Official Java client for the StreamFlow Pulse REST API.
@@ -77,10 +79,20 @@ public final class PulseClient implements AutoCloseable {
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
+    /** Methods safe to retry on a transient 5xx / transport error. */
+    private static final Set<String> IDEMPOTENT = Set.of("GET", "HEAD", "PUT", "DELETE", "OPTIONS");
+
     private final String baseUrl;
     private final HttpClient http;
     private final ObjectMapper mapper;
     private final Duration timeout;
+
+    // Opt-in retry policy (off by default — see Builder.maxRetries).
+    private final int maxRetries;
+    private final long retryBackoffMs;
+    private final long retryMaxBackoffMs;
+    private final Set<Integer> retryOnStatus;
+    private final boolean retryNonIdempotent;
 
     private volatile String token;
 
@@ -92,6 +104,7 @@ public final class PulseClient implements AutoCloseable {
     private final EventsResource events;
     private final IQResource iq;
     private final ModelsResource models;
+    private final WasmResource wasm;
     private final ConnectorsResource connectors;
     private final StreamsResource streams;
 
@@ -105,6 +118,11 @@ public final class PulseClient implements AutoCloseable {
                 : HttpClient.newBuilder()
                         .connectTimeout(this.timeout)
                         .build();
+        this.maxRetries = Math.max(0, b.maxRetries);
+        this.retryBackoffMs = b.retryBackoffMs;
+        this.retryMaxBackoffMs = b.retryMaxBackoffMs;
+        this.retryOnStatus = b.retryOnStatus;
+        this.retryNonIdempotent = b.retryNonIdempotent;
         this.auth = new AuthResource(this);
         this.pipelines = new PipelinesResource(this);
         this.agents = new AgentsResource(this);
@@ -113,6 +131,7 @@ public final class PulseClient implements AutoCloseable {
         this.events = new EventsResource(this);
         this.iq = new IQResource(this);
         this.models = new ModelsResource(this);
+        this.wasm = new WasmResource(this);
         this.connectors = new ConnectorsResource(this);
         this.streams = new StreamsResource(this);
     }
@@ -132,6 +151,7 @@ public final class PulseClient implements AutoCloseable {
     public EventsResource events() { return events; }
     public IQResource iq() { return iq; }
     public ModelsResource models() { return models; }
+    public WasmResource wasm() { return wasm; }
     /** {@code client.connectors()} — the connector catalogue (B-093 family + every native/bridged connector). */
     public ConnectorsResource connectors() { return connectors; }
     public StreamsResource streams() { return streams; }
@@ -207,7 +227,87 @@ public final class PulseClient implements AutoCloseable {
     // ------------------------------------------------------------------
     // Internal: request execution + error translation
     // ------------------------------------------------------------------
+    /**
+     * Runs {@link #requestOnce} under the opt-in retry policy. With retries off
+     * ({@code maxRetries == 0}, the default) it makes exactly one attempt.
+     */
     Map<String, Object> request(String method, String path, Object body, boolean authenticated) {
+        int attempt = 0;
+        while (true) {
+            try {
+                return requestOnce(method, path, body, authenticated);
+            } catch (PulseClientException e) {
+                if (attempt >= maxRetries) {
+                    throw e;
+                }
+                Long delayMs = retryDelayMs(method, e, attempt);
+                if (delayMs == null) {
+                    throw e;
+                }
+                sleepMs(delayMs);
+                attempt++;
+            }
+        }
+    }
+
+    /**
+     * The delay (ms) to wait before retrying {@code e} for {@code method}, or
+     * {@code null} when it must not be retried. 429 → any method (honour
+     * Retry-After); {@code retryOnStatus} 5xx + transport → idempotent methods
+     * only (unless {@code retryNonIdempotent}); terminal 4xx / others → never.
+     */
+    private Long retryDelayMs(String method, PulseClientException e, int attempt) {
+        if (e instanceof PulseRateLimitException rle) {
+            return rle.retryAfterSeconds().map(s -> (long) s * 1000L).orElseGet(() -> backoffMs(attempt));
+        }
+        boolean idempotent = IDEMPOTENT.contains(method.toUpperCase(Locale.ROOT)) || retryNonIdempotent;
+        if (!idempotent) {
+            return null;
+        }
+        if (e instanceof PulseApiException api) {
+            return retryOnStatus.contains(api.statusCode()) ? backoffMs(attempt) : null;
+        }
+        if (e instanceof TransportException) {
+            return backoffMs(attempt);
+        }
+        return null; // serialise / parse / interrupt — deterministic, not retried
+    }
+
+    /** Full-jitter exponential backoff: uniform in [0, min(max, base * 2^attempt)]. */
+    private long backoffMs(int attempt) {
+        long ceiling = Math.min(retryMaxBackoffMs, retryBackoffMs * (1L << Math.min(attempt, 20)));
+        if (ceiling <= 0) {
+            return 0L;
+        }
+        return (long) (java.util.concurrent.ThreadLocalRandom.current().nextDouble() * ceiling);
+    }
+
+    private static void sleepMs(long ms) {
+        if (ms <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new PulseClientException("Interrupted during retry backoff", e);
+        }
+    }
+
+    /**
+     * A connection-level failure (DNS / connect / read). A private subclass of
+     * {@link PulseClientException} so the retry layer can distinguish it from a
+     * deterministic serialise / parse error (both of which also wrap an
+     * {@link IOException}). Not part of the public surface — callers catch the
+     * {@code PulseClientException} base.
+     */
+    private static final class TransportException extends PulseClientException {
+        TransportException(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
+
+    private Map<String, Object> requestOnce(String method, String path, Object body, boolean authenticated) {
         HttpRequest.Builder reqBuilder = HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + path))
                 .timeout(timeout)
@@ -241,7 +341,7 @@ public final class PulseClient implements AutoCloseable {
         try {
             response = http.send(reqBuilder.build(), HttpResponse.BodyHandlers.ofString());
         } catch (IOException e) {
-            throw new PulseClientException("HTTP transport failure on " + method + " " + path, e);
+            throw new TransportException("HTTP transport failure on " + method + " " + path, e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new PulseClientException("Interrupted while calling " + method + " " + path, e);
@@ -775,6 +875,248 @@ public final class PulseClient implements AutoCloseable {
         }
     }
 
+    /**
+     * {@code client.wasm()} — B-110 sandboxed WASM module registry.
+     *
+     * <p>Upload WebAssembly modules that the streaming {@code wasm} operator runs
+     * over events, sandboxed in pure-Java Chicory on the engine (no host
+     * syscalls, bounded linear memory). Any {@code wasm32} toolchain (Rust,
+     * TinyGo, AssemblyScript, C) can author a module against the alloc/process
+     * ABI. Modules are org-scoped; upload / delete require the ADMIN role.
+     *
+     * <pre>{@code
+     * client.wasm().upload(new PulseClient.WasmResource.UploadOptions()
+     *         .name("pii-redactor")
+     *         .path(Path.of("./redactor.wasm")));
+     *
+     * builder.fromTopic("events").wasm(new StreamBuilder.WasmOptions()
+     *         .module("pii-redactor")).toTopic("clean");
+     * }</pre>
+     */
+    public static final class WasmResource {
+        private final PulseClient client;
+        WasmResource(PulseClient client) { this.client = client; }
+
+        /**
+         * {@code POST /api/pulse/wasm-modules} — upload (or replace) a module as
+         * {@code multipart/form-data}: a binary {@code module} part plus text
+         * fields {@code name} and (when set) {@code description}.
+         *
+         * <p>Supply the module bytes either by {@link UploadOptions#path(Path)} or
+         * {@link UploadOptions#data(byte[])}. The module is validated (must parse,
+         * import no host functions, export alloc/process/memory) before
+         * persisting. Replacing an existing name hot-swaps it with no agent
+         * restart.
+         *
+         * @return the persisted module metadata (name, sha256, version, …).
+         */
+        public Map<String, Object> upload(UploadOptions options) {
+            Objects.requireNonNull(options, "options");
+            if (options.name == null || options.name.isBlank()) {
+                throw new IllegalArgumentException("name must be a non-empty string");
+            }
+            if ((options.path == null) == (options.data == null)) {
+                throw new IllegalArgumentException("provide exactly one of 'path' or 'data'");
+            }
+
+            byte[] blob;
+            String fileName;
+            if (options.path != null) {
+                try {
+                    blob = java.nio.file.Files.readAllBytes(options.path);
+                } catch (IOException e) {
+                    throw new PulseClientException(
+                            "Failed to read module file " + options.path, e);
+                }
+                java.nio.file.Path fn = options.path.getFileName();
+                fileName = fn != null ? fn.toString() : options.name + ".wasm";
+            } else {
+                blob = options.data;
+                fileName = options.name + ".wasm";
+            }
+            if (blob.length == 0) {
+                throw new IllegalArgumentException("module bytes are empty");
+            }
+
+            // Reject a non-conforming module locally — before the HTTP round-trip —
+            // so the caller gets the same client-side IllegalArgumentException as for
+            // a bad argument, instead of a cryptic server 400 / runtime trap. Mirrors
+            // the server's ChicoryWasmRunner.validateModule (must parse, import no
+            // host functions, export alloc + process + memory).
+            validateWasmModule(blob);
+
+            Map<String, String> form = new java.util.LinkedHashMap<>();
+            form.put("name", options.name);
+            if (options.description != null) {
+                form.put("description", options.description);
+            }
+
+            return client.requestMultipart(
+                    "POST", "/api/pulse/wasm-modules", "module", fileName, blob, form);
+        }
+
+        /**
+         * Client-side structural validation of a WASM module's bytes, mirroring the
+         * server's {@code ChicoryWasmRunner.validateModule}. Inspects the binary
+         * (does NOT execute it): checks the magic + version, walks the section table
+         * to reject modules that import host functions (they must be a pure
+         * sandbox), and confirms the module exports {@code alloc}, {@code process}
+         * and {@code memory}.
+         *
+         * @throws IllegalArgumentException if the module is too short, has a bad
+         *         magic/version, imports host functions, is missing a required
+         *         export, or is otherwise malformed.
+         */
+        static void validateWasmModule(byte[] bytes) {
+            if (bytes == null || bytes.length < 8) {
+                throw new IllegalArgumentException("not a WASM module: too short");
+            }
+            // Magic "\0asm" + version 0x01 0x00 0x00 0x00.
+            if ((bytes[0] & 0xFF) != 0x00 || (bytes[1] & 0xFF) != 'a'
+                    || (bytes[2] & 0xFF) != 's' || (bytes[3] & 0xFF) != 'm'
+                    || (bytes[4] & 0xFF) != 0x01 || (bytes[5] & 0xFF) != 0x00
+                    || (bytes[6] & 0xFF) != 0x00 || (bytes[7] & 0xFF) != 0x00) {
+                throw new IllegalArgumentException("not a WASM module (bad magic/version)");
+            }
+
+            boolean hasAlloc = false;
+            boolean hasProcess = false;
+            boolean hasMemory = false;
+
+            int offset = 8;
+            while (offset < bytes.length) {
+                int id = bytes[offset] & 0xFF;
+                offset++;
+                long[] sizeRead = readUleb128(bytes, offset);
+                int size = (int) sizeRead[0];
+                offset = (int) sizeRead[1];
+                int payloadStart = offset;
+                int payloadEnd = payloadStart + size;
+                if (size < 0 || payloadEnd > bytes.length) {
+                    throw new IllegalArgumentException("malformed WASM module");
+                }
+
+                if (id == 2) { // import section
+                    long[] countRead = readUleb128(bytes, payloadStart);
+                    long count = countRead[0];
+                    if (count > 0) {
+                        throw new IllegalArgumentException(
+                                "WASM module imports host functions; it must be a pure sandbox "
+                                        + "(build with no WASI/host imports)");
+                    }
+                } else if (id == 7) { // export section
+                    int cursor = payloadStart;
+                    // Skip the declared count, then walk every entry in the
+                    // section payload. We bound on payloadEnd rather than the
+                    // declared count so a producer's miscounted-but-well-formed
+                    // export table still has all of its names collected.
+                    long[] countRead = readUleb128(bytes, cursor);
+                    cursor = (int) countRead[1];
+                    while (cursor < payloadEnd) {
+                        long[] nameLenRead = readUleb128(bytes, cursor);
+                        int nameLen = (int) nameLenRead[0];
+                        cursor = (int) nameLenRead[1];
+                        if (nameLen < 0 || cursor + nameLen > payloadEnd) {
+                            throw new IllegalArgumentException("malformed WASM module");
+                        }
+                        String name = new String(bytes, cursor, nameLen,
+                                java.nio.charset.StandardCharsets.UTF_8);
+                        cursor += nameLen;
+                        if (cursor >= payloadEnd) {
+                            throw new IllegalArgumentException("malformed WASM module");
+                        }
+                        cursor++; // 1 kind byte
+                        long[] indexRead = readUleb128(bytes, cursor);
+                        cursor = (int) indexRead[1];
+                        switch (name) {
+                            case "alloc" -> hasAlloc = true;
+                            case "process" -> hasProcess = true;
+                            case "memory" -> hasMemory = true;
+                            default -> { /* other exports are fine */ }
+                        }
+                    }
+                }
+
+                offset = payloadEnd;
+            }
+
+            if (!(hasAlloc && hasProcess && hasMemory)) {
+                throw new IllegalArgumentException(
+                        "WASM module must export alloc, process and memory");
+            }
+        }
+
+        /**
+         * Reads an unsigned LEB128 integer starting at {@code offset}. Returns
+         * {@code [value, nextOffset]}. Bounds-checked: throws
+         * {@link IllegalArgumentException} on overrun or an over-long encoding.
+         */
+        private static long[] readUleb128(byte[] bytes, int offset) {
+            long result = 0;
+            int shift = 0;
+            int pos = offset;
+            while (true) {
+                if (pos >= bytes.length || shift > 63) {
+                    throw new IllegalArgumentException("malformed WASM module");
+                }
+                int b = bytes[pos] & 0xFF;
+                pos++;
+                result |= ((long) (b & 0x7F)) << shift;
+                if ((b & 0x80) == 0) {
+                    break;
+                }
+                shift += 7;
+            }
+            return new long[]{result, pos};
+        }
+
+        /** {@code GET /api/pulse/wasm-modules} — modules registered for the caller's org. */
+        @SuppressWarnings("unchecked")
+        public List<Map<String, Object>> list() {
+            Map<String, Object> result = client.request("GET", "/api/pulse/wasm-modules", null, true);
+            Object modules = result.get("modules");
+            if (modules instanceof List<?> list) {
+                return (List<Map<String, Object>>) list;
+            }
+            return Collections.emptyList();
+        }
+
+        /** {@code GET /api/pulse/wasm-modules/{name}} — metadata for one module. */
+        public Map<String, Object> get(String name) {
+            requireModuleName(name);
+            return client.request("GET", "/api/pulse/wasm-modules/" + encode(name), null, true);
+        }
+
+        /** {@code DELETE /api/pulse/wasm-modules/{name}} — remove a module (ADMIN). */
+        public void delete(String name) {
+            requireModuleName(name);
+            client.request("DELETE", "/api/pulse/wasm-modules/" + encode(name), null, true);
+        }
+
+        private static void requireModuleName(String name) {
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("name must be a non-empty string");
+            }
+        }
+
+        /** Options for {@link #upload(UploadOptions)}. Exactly one of path / data is required. */
+        public static final class UploadOptions {
+            String name;
+            java.nio.file.Path path;
+            byte[] data;
+            String description;
+
+            /** Module name referenced by {@code wasm(module=...)}. Required. */
+            public UploadOptions name(String name) { this.name = name; return this; }
+            /** Filesystem path to the {@code .wasm} file (alternative to {@link #data}). */
+            public UploadOptions path(java.nio.file.Path path) { this.path = path; return this; }
+            /** Raw module bytes (alternative to {@link #path}). */
+            public UploadOptions data(byte[] data) { this.data = data; return this; }
+            /** Optional human-readable description of the module. */
+            public UploadOptions description(String description) { this.description = description; return this; }
+        }
+    }
+
     private static String encode(String pathSegment) {
         return java.net.URLEncoder.encode(pathSegment, java.nio.charset.StandardCharsets.UTF_8)
                 .replace("+", "%20");
@@ -790,6 +1132,12 @@ public final class PulseClient implements AutoCloseable {
         private Duration timeout;
         private HttpClient httpClient;
         private ObjectMapper mapper;
+
+        private int maxRetries = 0;
+        private long retryBackoffMs = 200;
+        private long retryMaxBackoffMs = 10_000;
+        private Set<Integer> retryOnStatus = Set.of(502, 503, 504);
+        private boolean retryNonIdempotent = false;
 
         private Builder() {}
 
@@ -824,6 +1172,43 @@ public final class PulseClient implements AutoCloseable {
         /** Optional — bring-your-own Jackson {@link ObjectMapper}. */
         public Builder objectMapper(ObjectMapper mapper) {
             this.mapper = mapper;
+            return this;
+        }
+
+        /**
+         * Optional — enable opt-in, bounded, full-jitter exponential-backoff
+         * retries. {@code 0} (default) means retries are OFF: exactly one attempt.
+         * 429 (rate limited) is then retried for any method (honouring
+         * Retry-After); {@link #retryOnStatus} 5xx and transport errors are
+         * retried only for idempotent methods unless {@link #retryNonIdempotent}
+         * is set; terminal 4xx are never retried.
+         */
+        public Builder maxRetries(int maxRetries) {
+            this.maxRetries = maxRetries;
+            return this;
+        }
+
+        /** Base backoff (default 200ms); the per-attempt ceiling is {@code base * 2^attempt}. */
+        public Builder retryBackoff(Duration backoff) {
+            this.retryBackoffMs = backoff.toMillis();
+            return this;
+        }
+
+        /** Per-attempt backoff cap (default 10s). */
+        public Builder retryMaxBackoff(Duration maxBackoff) {
+            this.retryMaxBackoffMs = maxBackoff.toMillis();
+            return this;
+        }
+
+        /** Retryable 5xx statuses (default {@code 502, 503, 504}). */
+        public Builder retryOnStatus(Set<Integer> statuses) {
+            this.retryOnStatus = Set.copyOf(statuses);
+            return this;
+        }
+
+        /** When true, also retry non-idempotent methods (POST/PATCH) on 5xx/transport. Default false. */
+        public Builder retryNonIdempotent(boolean retryNonIdempotent) {
+            this.retryNonIdempotent = retryNonIdempotent;
             return this;
         }
 

@@ -75,7 +75,7 @@ Map<String, Object> newPipeline = client.pipelines().create(Map.of(
                 Map.of("id", "sink", "type", "sink",   "subType", "telegram"))));
 ```
 
-## Supported surfaces (v2.6.0)
+## Supported surfaces (v2.7.x)
 
 | Resource | Methods | Notes |
 |---|---|---|
@@ -111,7 +111,50 @@ try (DuplexChannel ch = client.duplex("fraud-detector")) {
 }
 ```
 
+## Sandboxed WASM operators
+
+Upload a WebAssembly module and run it over each event, sandboxed in pure-Java
+Chicory on the engine (B-110) — no host syscalls, bounded linear memory. Any
+`wasm32` toolchain (Rust, TinyGo, AssemblyScript, C) can author a module
+against the alloc/process ABI.
+
+```java
+// Upload a module (validated: must parse, import no host functions, export alloc/process/memory)
+client.wasm().upload(new PulseClient.WasmResource.UploadOptions()
+        .name("pii-redactor").path(Path.of("./redactor.wasm"))
+        .description("strip PII from the payload"));
+
+builder.fromTopic("events")
+    .wasm(new StreamBuilder.WasmOptions().module("pii-redactor"))
+    .toTopic("clean");
+```
+
 ## Authentication
+
+### Where credentials come from
+
+The SDK authenticates as a **Pulse user** — there are no separate API keys to
+provision. A username + password (or a JWT minted from them) is all you need,
+and they live in **your own Pulse instance**, not on streamflowmesh.io.
+
+1. **First run → bootstrap admin.** The very first account is created either by
+   the first-run screen of the Pulse web/desktop app, or by a single
+   *unauthenticated* `POST /api/auth/register` with a `{"username","password"}`
+   body **while no user exists yet**. That first user is granted **ADMIN**. As
+   soon as any user exists, `/api/auth/register` locks down and requires an admin
+   JWT — so the open bootstrap can only ever mint the very first account.
+2. **Additional users.** An admin creates more accounts from **Settings → Users**
+   in the Pulse UI (or an admin-authenticated `register` call). Give each CI job
+   or service integration its own dedicated user rather than sharing the admin.
+3. **Exchange for a token.** `auth().login(user, pass)` returns a short-lived
+   **access JWT** (~1 h TTL) plus a **refresh token**; the client caches the
+   access token automatically. In CI, either call `login` at startup, or pass a
+   pre-minted JWT (pattern 2 below) and refresh it before it expires.
+
+`baseUrl(...)` points at *your* Pulse server — `http://localhost:9090` for a
+local `pulse --headless` or desktop install, or your deployed Pulse URL.
+
+### Passing the token to the client
 
 ```java
 // 1. Username + password (interactive / CLI tools)
@@ -180,6 +223,37 @@ mvn install
 ```
 
 CI runs the same on every push touching `pulse-java/` — see `.github/workflows/pulse-java.yaml`.
+
+## Automatic retry (opt-in)
+
+Off by default — one attempt per request. Enable bounded, full-jitter
+exponential-backoff retries on the builder:
+
+```java
+PulseClient client = PulseClient.builder()
+        .baseUrl("http://localhost:9090")
+        .maxRetries(3) // 0 = off (default)
+        .build();
+```
+
+429 (rate limited) is retried for any method, honouring `Retry-After`;
+`retryOnStatus` 5xx (default `502/503/504`) and transport errors are retried only
+for idempotent methods (GET/HEAD/PUT/DELETE) unless `retryNonIdempotent(true)`;
+terminal 4xx are never retried.
+
+## Local pipeline simulation (Python-only today)
+
+The streams DSL is **client-side declaration, server-side execution**:
+`streams().compile(builder)` builds the pipeline JSON locally (no network) and
+`streams().deploy(builder)` runs it on the Pulse engine. This SDK has **no
+in-process simulator** — to validate a pipeline before deploy, `compile()` and
+inspect the JSON, or deploy to a dev Pulse.
+
+> A local `TopologyTestDriver`-style executor that runs a streams pipeline
+> in-process over sample events (`StreamBuilder.simulate(events)`) currently
+> exists **only in the Python SDK** (`streamflow-pulse-client`). Cross-language
+> parity is tracked as **B-169** (issue #311); until then, local simulation is a
+> Python-exclusive capability.
 
 ## Roadmap
 

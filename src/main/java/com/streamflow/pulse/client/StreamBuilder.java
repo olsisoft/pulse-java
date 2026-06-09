@@ -362,6 +362,29 @@ public final class StreamBuilder {
         return this;
     }
 
+    /**
+     * B-110 — run a sandboxed WASM module over each event. The uploaded module
+     * (see {@link PulseClient.WasmResource#upload}) receives the event payload
+     * bytes and returns the new payload (transform / map) or drops the event
+     * (filter), running in pure-Java Chicory on the engine — no host syscalls,
+     * bounded linear memory. Any {@code wasm32} toolchain (Rust, TinyGo,
+     * AssemblyScript, C) can author a module against the alloc/process ABI.
+     *
+     * <p>Upload the module first with {@link PulseClient.WasmResource#upload}.
+     */
+    public StreamBuilder wasm(WasmOptions options) {
+        Objects.requireNonNull(options, "options");
+        requireNonBlank("module", options.module);
+        Map<String, Object> op = new LinkedHashMap<>();
+        op.put("type", "wasm");
+        op.put("module", options.module);
+        if (options.parallelism != null) op.put("parallelism", options.parallelism);
+        if (options.ordering != null) op.put("ordering", options.ordering);
+        if (options.onFailure != null) op.put("onFailure", options.onFailure);
+        operators.add(op);
+        return this;
+    }
+
     /** Broadcast join: enrich the stream against a fully-replicated table. */
     public StreamBuilder broadcastJoin(BroadcastJoinOptions options) {
         Objects.requireNonNull(options, "options");
@@ -911,6 +934,30 @@ public final class StreamBuilder {
 
         /** Must be {@code "EMIT_ERROR"}, {@code "DROP"} or {@code "PASS_THROUGH"}. */
         public MlPredictOptions onFailure(String f) { this.onFailure = checkFailure(f); return this; }
+    }
+
+    /** B-110 — options for {@link #wasm(WasmOptions)}. */
+    public static final class WasmOptions {
+        String module;
+        Integer parallelism;
+        String ordering;
+        String onFailure;
+
+        /** Registered module name (see {@link PulseClient.WasmResource#upload}). Required. */
+        public WasmOptions module(String m) { this.module = m; return this; }
+        public WasmOptions parallelism(int n) { this.parallelism = n; return this; }
+
+        /** Must be {@code "PRESERVE_INPUT"} or {@code "UNORDERED"}. */
+        public WasmOptions ordering(String o) {
+            if (o != null && !o.equals("PRESERVE_INPUT") && !o.equals("UNORDERED")) {
+                throw new IllegalArgumentException(
+                    "ordering must be PRESERVE_INPUT or UNORDERED, got '" + o + "'");
+            }
+            this.ordering = o; return this;
+        }
+
+        /** Must be {@code "EMIT_ERROR"}, {@code "DROP"} or {@code "PASS_THROUGH"}. */
+        public WasmOptions onFailure(String f) { this.onFailure = checkFailure(f); return this; }
     }
 
     private static String checkFailure(String f) {
