@@ -23,41 +23,103 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 /**
- * {@code client.events()} — live SSE stream of events flowing through the
- * Pulse engine.
+ * {@code client.events()} — publish to, read from, and live-stream the events
+ * flowing through the Pulse engine.
  *
  * <h2>Quick start</h2>
  *
  * <pre>{@code
+ * // Producer side — write to a pipeline's input topic; the engine carries
+ * // each event through every downstream stage (decode, rules, LLM, sink, …):
+ * client.events().publish("legacy-cobol", record);
+ *
+ * // Inspect a hop while developing:
+ * for (Map<String, Object> e : client.events().read("modernized-events", 20))
+ *     System.out.println(e.get("value"));
+ *
+ * // Live SSE stream:
  * CompletableFuture<Void> done = client.events().stream(event -> {
  *     System.out.println(event.get("type"));
  * });
- *
- * // ... later, to stop:
- * done.cancel(true);
- *
- * // or block until the server closes the stream:
- * done.join();
+ * done.cancel(true);   // stop early, or done.join() to block
  * }</pre>
  *
- * <p>The consumer callback is invoked on a background thread for each parsed
- * event. Cancel the returned {@link CompletableFuture} to stop the stream;
- * the HTTP connection is closed by the cancel hook.
- *
- * <p>For richer back-pressure / multi-subscriber semantics, wire a
- * {@link java.util.concurrent.Flow.Publisher} on top of this consumer (left
- * as a v3.0 follow-up — most operator use-cases just want the consumer-
- * callback shape).
+ * <p>The {@code stream} consumer callback is invoked on a background thread for
+ * each parsed event. Cancel the returned {@link CompletableFuture} to stop the
+ * stream; the HTTP connection is closed by the cancel hook.
  */
 public final class EventsResource {
 
     private static final String PATH = "/api/pulse/events/stream";
+    private static final String EVENTS_PATH = "/api/pulse/events";
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
     private final PulseClient client;
 
     EventsResource(PulseClient client) {
         this.client = client;
+    }
+
+    /**
+     * Publishes one event to {@code topic} via {@code POST /api/pulse/events}.
+     *
+     * <p>This is the producer side of a pipeline: write to a pipeline's
+     * {@code inputTopic} and the engine carries the event through every
+     * downstream stage — there is no glue code to write between stages.
+     *
+     * @param topic the destination topic (a pipeline's input topic, typically);
+     *              auto-created on first publish if it doesn't exist
+     * @param key   optional partition / routing key (may be {@code null}); events
+     *              sharing a key stay ordered on the same partition
+     * @param value the event payload as a string (JSON or raw text)
+     * @return the server acknowledgement ({@code eventId}, {@code topic},
+     *         {@code key}, {@code timestamp})
+     * @throws IllegalArgumentException if {@code topic} is null/blank
+     * @throws PulseAuthException if no token is set
+     * @throws PulseApiException on a non-2xx response (e.g. a topic key-policy
+     *         violation surfaces as 400)
+     */
+    public Map<String, Object> publish(String topic, String key, String value) {
+        if (topic == null || topic.isBlank()) {
+            throw new IllegalArgumentException("topic must not be blank");
+        }
+        Map<String, Object> body = new HashMap<>();
+        body.put("topic", topic);
+        if (key != null) body.put("key", key);
+        body.put("value", value);
+        return client.request("POST", EVENTS_PATH, body, true);
+    }
+
+    /** Publishes one event with no routing key. See {@link #publish(String, String, String)}. */
+    public Map<String, Object> publish(String topic, String value) {
+        return publish(topic, null, value);
+    }
+
+    /**
+     * Reads the most recent events on {@code topic} via
+     * {@code GET /api/pulse/events/{topic}?limit=N} — handy for inspecting a
+     * pipeline hop while developing.
+     *
+     * @param topic the topic to read
+     * @param limit max number of events to return (newest first); clamped to ≥ 1
+     * @return the events list — each a map with {@code id}, {@code topic},
+     *         {@code key}, {@code value}, {@code timestamp}; empty if the topic
+     *         has no events
+     * @throws IllegalArgumentException if {@code topic} is null/blank
+     * @throws PulseAuthException if no token is set
+     */
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> read(String topic, int limit) {
+        if (topic == null || topic.isBlank()) {
+            throw new IllegalArgumentException("topic must not be blank");
+        }
+        String path = EVENTS_PATH + "/" + enc(topic) + "?limit=" + Math.max(1, limit);
+        Map<String, Object> result = client.request("GET", path, null, true);
+        Object events = result.get("events");
+        if (events instanceof List<?> list) {
+            return (List<Map<String, Object>>) list;
+        }
+        return java.util.Collections.emptyList();
     }
 
     /**

@@ -1,0 +1,28 @@
+# Binary telemetry frame → JSON Pulse WASM operator.
+#
+# A standalone crate (not a workspace member) so it builds cleanly for the
+# sandbox target. Build the uploadable module with:
+#
+#   cargo build --release --target wasm32-unknown-unknown \
+#       --manifest-path pulse-java/examples/predictive-maintenance-onnx/wasm-telemetry-decoder/Cargo.toml
+#
+# Output: target/wasm32-unknown-unknown/release/pulse_wasm_telemetry_decoder.wasm
+# Exports alloc/process/memory, imports nothing — uploadable as-is via
+# client.wasm().upload(...).
+[package]
+name = "pulse-wasm-telemetry-decoder"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+pulse-wasm-guest = { path = "../../../../pulse-wasm-guest" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+strip = true
