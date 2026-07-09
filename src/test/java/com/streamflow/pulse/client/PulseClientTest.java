@@ -1883,4 +1883,75 @@ class PulseClientTest {
             }
         }
     }
+
+    // ------------------------------------------------------------------
+    @Nested
+    class EventsPublishRead {
+
+        @Test
+        void publishPostsTopicKeyValueAndReturnsAck() {
+            mockServer.stubFor(post("/api/pulse/events")
+                    .withRequestBody(equalToJson(
+                            "{\"topic\":\"legacy-cobol\",\"key\":\"ACC1\",\"value\":\"raw-record\"}"))
+                    .willReturn(aResponse().withStatus(201)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("{\"eventId\":\"e-1\",\"topic\":\"legacy-cobol\","
+                                    + "\"key\":\"ACC1\",\"message\":\"Event published\"}")));
+
+            try (PulseClient client = newAuthedClient()) {
+                Map<String, Object> ack = client.events().publish("legacy-cobol", "ACC1", "raw-record");
+                assertThat(ack).containsEntry("eventId", "e-1");
+                assertThat(ack).containsEntry("topic", "legacy-cobol");
+            }
+        }
+
+        @Test
+        void publishWithoutKeyOmitsTheKeyField() {
+            mockServer.stubFor(post("/api/pulse/events")
+                    .withRequestBody(equalToJson("{\"topic\":\"t\",\"value\":\"v\"}"))
+                    .willReturn(aResponse().withStatus(201)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("{\"eventId\":\"e-2\",\"topic\":\"t\"}")));
+
+            try (PulseClient client = newAuthedClient()) {
+                assertThat(client.events().publish("t", "v")).containsEntry("eventId", "e-2");
+            }
+        }
+
+        @Test
+        void publishRejectsBlankTopic() {
+            try (PulseClient client = newAuthedClient()) {
+                assertThatThrownBy(() -> client.events().publish("  ", "v"))
+                        .isInstanceOf(IllegalArgumentException.class);
+            }
+        }
+
+        @Test
+        void readReturnsTheEventsListNewestFirst() {
+            mockServer.stubFor(get(urlEqualTo("/api/pulse/events/modernized-events?limit=20"))
+                    .willReturn(aResponse().withStatus(200)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("{\"topic\":\"modernized-events\",\"count\":2,\"events\":["
+                                    + "{\"id\":\"a\",\"key\":\"ACC1\",\"value\":\"{\\\"amount\\\":1}\"},"
+                                    + "{\"id\":\"b\",\"key\":\"ACC2\",\"value\":\"{\\\"amount\\\":2}\"}]}")));
+
+            try (PulseClient client = newAuthedClient()) {
+                List<Map<String, Object>> events = client.events().read("modernized-events", 20);
+                assertThat(events).hasSize(2);
+                assertThat(events.get(0)).containsEntry("key", "ACC1");
+            }
+        }
+
+        @Test
+        void readReturnsEmptyListWhenNoEvents() {
+            mockServer.stubFor(get(urlEqualTo("/api/pulse/events/empty-topic?limit=5"))
+                    .willReturn(aResponse().withStatus(200)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("{\"topic\":\"empty-topic\",\"count\":0,\"events\":[]}")));
+
+            try (PulseClient client = newAuthedClient()) {
+                assertThat(client.events().read("empty-topic", 5)).isEmpty();
+            }
+        }
+    }
 }

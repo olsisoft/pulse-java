@@ -1,0 +1,91 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Kafka in, AI inline, Kafka out — REPLACE YOUR KAFKA.
+#
+#   docker compose -f docker-compose.mesh.yml up -d
+#   ./demo.sh
+#
+# Same pipeline, one fewer moving part. There is no separate Kafka here: the
+# StreamFlow engine IS the broker. It speaks the Kafka wire protocol on :9092
+# (your stock producers/consumers connect here, unchanged) AND the native mesh
+# protocol on :9094 (Pulse connects here as a CLIENT, in REMOTE mode). One binary
+# is your event mesh and your Kafka-compatible broker and the substrate the
+# inline-AI pipeline runs on.
+#
+# The pipeline definition does not change by a single line versus the embedded
+# topology. Only the data plane moves out of Pulse and into the mesh, which now
+# owns durability (Raft-replicated log), shard-per-core scale, and exactly-once.
+# Add more `streamflow` nodes to the bootstrap list to grow the mesh.
+#
+# The `kafka` network alias on the streamflow service lets demo.sh use the exact
+# same bootstrap (`kafka:9092`) in both topologies.
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+
+  # The event mesh AND the Kafka broker: one StreamFlow engine node.
+  streamflow:
+    image: ghcr.io/olsisoft/pulse-java:2.7.1
+    environment:
+      JAVA_OPTS: "-Xms512m -Xmx2g -XX:+UseG1GC"
+      STREAMFLOW_NODE_ID: node-1
+      STREAMFLOW_NATIVE_CLUSTER: "node-1:streamflow:9094"
+    volumes:
+      - ./config/streamflow.properties:/opt/streamflow/config/streamflow.properties:ro
+      - meshdata:/opt/streamflow/data
+    ports:
+      - "9092:9092"   # Kafka wire protocol (your stock clients connect here)
+      - "9094:9094"   # native data-plane protocol (Pulse connects here)
+      - "8080:8080"   # control-plane API + /health
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 40
+      start_period: 30s
+    networks:
+      mesh:
+        aliases: [kafka]   # demo.sh + the connectors reach the broker as kafka:9092
+
+  # Stock Kafka CLI (the official kafka-clients), used by demo.sh against the
+  # StreamFlow Kafka wire port — proving plain Kafka tools work unchanged.
+  kafka-tools:
+    image: apache/kafka:3.7.0
+    command: ["sleep", "infinity"]
+    depends_on:
+      streamflow: { condition: service_healthy }
+    networks: [mesh]
+
+  pulse:
+    image: ghcr.io/olsisoft/pulse-java-pulse:2.7.1
+    environment:
+      # The whole change is here: Pulse is a CLIENT of the mesh, not the engine.
+      PULSE_DATAPLANE_MODE: remote
+      PULSE_DATAPLANE_REMOTE_BOOTSTRAP: "streamflow:9094"
+      PULSE_DATAPLANE_REMOTE_NATIVE: "true"
+      PULSE_DATAPLANE_REMOTE_NATIVE_PORT: "9094"
+      JAVA_OPTS: "-Xms256m -Xmx1g"
+    ports: ["9090:9090"]
+    volumes:
+      - ./pulse-config.yaml:/data/pulse-config.yaml:ro
+      - pulsedata:/data
+    depends_on:
+      streamflow: { condition: service_healthy }
+    networks: [mesh]
+
+  deployer:
+    build: { context: ., dockerfile: deployer/Dockerfile }
+    environment:
+      PULSE_URL: http://pulse:9090
+      PULSE_USER: admin
+      PULSE_PASSWORD: admin12345
+      KAFKA_BOOTSTRAP: kafka:9092   # the streamflow node, via its network alias
+    depends_on:
+      pulse: { condition: service_healthy }
+    restart: "no"
+    networks: [mesh]
+
+volumes:
+  pulsedata:
+  meshdata:
+
+networks:
+  mesh:

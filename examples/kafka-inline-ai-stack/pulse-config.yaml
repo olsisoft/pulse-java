@@ -1,0 +1,5 @@
+# Turns on the source + sink component runtimes so the Kafka source and Kafka
+# sink connector nodes mount through the bridge (bundled in the Pulse image).
+components:
+  source: { newRuntime: true }
+  sink: { newRuntime: true }
