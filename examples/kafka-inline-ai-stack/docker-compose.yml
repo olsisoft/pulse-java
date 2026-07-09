@@ -1,0 +1,79 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Kafka in, AI inline, Kafka out — one command. KEEP YOUR KAFKA.
+#
+#   docker compose up -d
+#   ./demo.sh                  # produce a transaction, consume it back enriched
+#
+# This is the "drop in beside your existing Kafka" topology: a real Apache Kafka
+# broker holds the data; Pulse runs the StreamFlow engine in-process (EMBEDDED)
+# and bridges the topic in and out. Your stock producer writes `transactions`;
+# the pipeline derives the fraud features (WASM), scores them (ONNX), gates them
+# (rule), and produces `transactions-enriched`; your stock consumer reads it.
+#
+# To replace Kafka entirely with one binary that is BOTH the broker and the
+# inline-AI engine, use the sibling docker-compose.mesh.yml — same pipeline.
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+
+  kafka:
+    image: apache/kafka:3.7.0
+    ports: ["9092:9092"]
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      CLUSTER_ID: 5L6g3nShT-eMCtK--X86sw
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+    networks: [stack]
+
+  # Stock Kafka CLI (the official kafka-clients), used by demo.sh to produce and
+  # consume — proving plain Kafka tools work unchanged against the enriched flow.
+  kafka-tools:
+    image: apache/kafka:3.7.0
+    command: ["sleep", "infinity"]
+    depends_on:
+      kafka: { condition: service_healthy }
+    networks: [stack]
+
+  pulse:
+    image: ghcr.io/olsisoft/pulse-java-pulse:2.7.1
+    environment:
+      PULSE_DATAPLANE_MODE: embedded         # the engine runs in-process
+      JAVA_OPTS: "-Xms256m -Xmx1g"
+    ports: ["9090:9090"]
+    volumes:
+      - ./pulse-config.yaml:/data/pulse-config.yaml:ro   # turns the source/sink runtimes on
+      - pulsedata:/data
+    depends_on:
+      kafka: { condition: service_healthy }
+    networks: [stack]
+
+  deployer:
+    build: { context: ., dockerfile: deployer/Dockerfile }
+    environment:
+      PULSE_URL: http://pulse:9090
+      PULSE_USER: admin
+      PULSE_PASSWORD: admin12345
+      KAFKA_BOOTSTRAP: kafka:9092
+    depends_on:
+      pulse: { condition: service_healthy }
+    restart: "no"
+    networks: [stack]
+
+volumes:
+  pulsedata:
+
+networks:
+  stack:

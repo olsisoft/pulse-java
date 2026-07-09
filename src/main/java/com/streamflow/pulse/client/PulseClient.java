@@ -75,7 +75,7 @@ import java.util.Set;
  */
 public final class PulseClient implements AutoCloseable {
 
-    private static final String USER_AGENT = "pulse-client-java/2.7.5";
+    private static final String USER_AGENT = "pulse-client-java/2.7.8";
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
