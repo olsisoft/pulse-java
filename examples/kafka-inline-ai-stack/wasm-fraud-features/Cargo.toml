@@ -1,0 +1,14 @@
+[package]
+name = "pulse-wasm-fraud-features"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[lib]
+crate-type = ["cdylib"]
+[dependencies]
+pulse-wasm-guest = { path = "../../../../pulse-wasm-guest" }
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+strip = true
