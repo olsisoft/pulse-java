@@ -15,8 +15,10 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -75,7 +77,7 @@ import java.util.Set;
  */
 public final class PulseClient implements AutoCloseable {
 
-    private static final String USER_AGENT = "pulse-client-java/2.7.8";
+    private static final String USER_AGENT = "pulse-client-java/2.7.9";
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
@@ -106,6 +108,8 @@ public final class PulseClient implements AutoCloseable {
     private final ModelsResource models;
     private final WasmResource wasm;
     private final ConnectorsResource connectors;
+    private final PvscResource pvsc;
+    private final EvalsResource evals;
     private final StreamsResource streams;
 
     private PulseClient(Builder b) {
@@ -133,6 +137,8 @@ public final class PulseClient implements AutoCloseable {
         this.models = new ModelsResource(this);
         this.wasm = new WasmResource(this);
         this.connectors = new ConnectorsResource(this);
+        this.pvsc = new PvscResource(this);
+        this.evals = new EvalsResource(this);
         this.streams = new StreamsResource(this);
     }
 
@@ -154,6 +160,8 @@ public final class PulseClient implements AutoCloseable {
     public WasmResource wasm() { return wasm; }
     /** {@code client.connectors()} — the connector catalogue (B-093 family + every native/bridged connector). */
     public ConnectorsResource connectors() { return connectors; }
+    public PvscResource pvsc() { return pvsc; }
+    public EvalsResource evals() { return evals; }
     public StreamsResource streams() { return streams; }
 
     /**
@@ -1115,6 +1123,198 @@ public final class PulseClient implements AutoCloseable {
             public UploadOptions data(byte[] data) { this.data = data; return this; }
             /** Optional human-readable description of the module. */
             public UploadOptions description(String description) { this.description = description; return this; }
+        }
+    }
+
+    /**
+     * {@code client.pvsc()} — topic contracts, the arbitration policy, the
+     * guardian pool and the firewall dead-letter queue.
+     */
+    public static final class PvscResource {
+        private final PulseClient client;
+        PvscResource(PulseClient client) { this.client = client; }
+
+        /** {@code GET /api/pulse/pvsc/schemas} — every registered topic contract. */
+        @SuppressWarnings("unchecked")
+        public List<Map<String, Object>> schemas() {
+            Map<String, Object> result = client.request("GET", "/api/pulse/pvsc/schemas", null, true);
+            Object schemas = result.get("schemas");
+            if (schemas instanceof List<?> list) {
+                return (List<Map<String, Object>>) list;
+            }
+            return Collections.emptyList();
+        }
+
+        /**
+         * {@code PUT /api/pulse/pvsc/schemas} — registers or replaces a topic's
+         * contract.
+         *
+         * <p>A field rule may carry {@code grounding}: {@code "required"} blocks a
+         * value the agent could not have derived from what it was given,
+         * {@code "warn"} reports it, and the default {@code "ignore"} does not
+         * look. That is the check that catches a figure which is well-typed, in
+         * range, confidently asserted and invented — every other rule in the
+         * schema passes such a value.
+         *
+         * <p>A field rule may also carry {@code derivation}: {@code "deny"}
+         * (the default — the figure must appear in the input) or
+         * {@code "allow"} (the agent may compute it in one step). Arithmetic
+         * provenance is opt-in because "derivable" is not "derived": with an
+         * input of 42, the value 84 is reachable as 42 + 42 without anything
+         * having performed that addition.
+         *
+         * <p>The write REPLACES the schema rather than merging into it: a field
+         * you omit is gone, grounding policy included. Read the current schema
+         * first if you are changing one field of several.
+         */
+        public Map<String, Object> saveSchema(Map<String, Object> schema) {
+            return client.request("PUT", "/api/pulse/pvsc/schemas", schema, true);
+        }
+
+        /** {@code DELETE /api/pulse/pvsc/schemas} — drops a topic's contract. */
+        public Map<String, Object> deleteSchema(String topic) {
+            return client.request("DELETE", "/api/pulse/pvsc/schemas",
+                    Map.of("topic", topic), true);
+        }
+
+        /** {@code GET /api/pulse/pvsc/config} — consensus, degradation, arbitration. */
+        public Map<String, Object> config() {
+            return client.request("GET", "/api/pulse/pvsc/config", null, true);
+        }
+
+        /** {@code PUT /api/pulse/pvsc/config} — patches the settings named in {@code patch}. */
+        public Map<String, Object> updateConfig(Map<String, Object> patch) {
+            return client.request("PUT", "/api/pulse/pvsc/config", patch, true);
+        }
+
+        /**
+         * Replaces the arbitration stances.
+         *
+         * <p>A stance is attached to the guardian that votes, never read out of
+         * what the vote says. Lower {@code precedence} wins — rank 1 outranks
+         * rank 2 — and a {@code veto} stance blocks by construction rather than
+         * by count. An empty list disables arbitration, so the majority result
+         * stands; it is sent as {@code []} rather than omitted, because clearing
+         * the stances is a real instruction.
+         */
+        public Map<String, Object> setStances(List<Map<String, Object>> stances) {
+            Map<String, Object> patch = new LinkedHashMap<>();
+            patch.put("arbitrationStances", stances == null ? List.of() : stances);
+            return updateConfig(patch);
+        }
+
+        /**
+         * {@code GET /api/pulse/pvsc/metrics} — counters plus the quorum
+         * information yield ({@code quorumInformationYield},
+         * {@code quorumRedundantGuardianCalls}, {@code quorumInterpretation}),
+         * which say whether consulting the quorum changed any decision the first
+         * guardian would have made alone.
+         */
+        public Map<String, Object> metrics() {
+            return client.request("GET", "/api/pulse/pvsc/metrics", null, true);
+        }
+
+        /** {@code GET /api/pulse/pvsc/guardians} — the registered guardian pool. */
+        @SuppressWarnings("unchecked")
+        public List<Map<String, Object>> guardians() {
+            Map<String, Object> result = client.request("GET", "/api/pulse/pvsc/guardians", null, true);
+            Object guardians = result.get("guardians");
+            if (guardians instanceof List<?> list) {
+                return (List<Map<String, Object>>) list;
+            }
+            return Collections.emptyList();
+        }
+
+        /** {@code GET /api/pulse/pvsc/dlq} — events the firewall turned away. */
+        @SuppressWarnings("unchecked")
+        public List<Map<String, Object>> dlq() {
+            Map<String, Object> result = client.request("GET", "/api/pulse/pvsc/dlq", null, true);
+            Object entries = result.get("entries");
+            if (entries instanceof List<?> list) {
+                return (List<Map<String, Object>>) list;
+            }
+            return Collections.emptyList();
+        }
+
+        /** {@code POST /api/pulse/pvsc/dlq/reinject} — replays one blocked event. */
+        public Map<String, Object> reinject(String eventId) {
+            return client.request("POST", "/api/pulse/pvsc/dlq/reinject",
+                    Map.of("eventId", eventId), true);
+        }
+
+        /** {@code POST /api/pulse/pvsc/dlq/discard} — drops one blocked event for good. */
+        public Map<String, Object> discard(String eventId) {
+            return client.request("POST", "/api/pulse/pvsc/dlq/discard",
+                    Map.of("eventId", eventId), true);
+        }
+    }
+
+    /**
+     * {@code client.evals()} — golden cases replayed against live agents, with
+     * a ratcheting non-regression gate.
+     *
+     * <p>The gate counts PASSES against a recorded floor rather than counting
+     * failures, so deleting an assertion cannot satisfy it. Cases run
+     * node-isolated: nothing is persisted, published to a downstream topic, or
+     * acted on, which is what makes running a suite against production agents
+     * safe.
+     */
+    public static final class EvalsResource {
+        private final PulseClient client;
+        EvalsResource(PulseClient client) { this.client = client; }
+
+        /** {@code GET /api/pulse/evals} — the suite ids that have at least one case. */
+        public List<String> suites() {
+            Map<String, Object> result = client.request("GET", "/api/pulse/evals", null, true);
+            Object suites = result.get("suites");
+            if (suites instanceof List<?> list) {
+                List<String> out = new ArrayList<>(list.size());
+                for (Object item : list) {
+                    if (item instanceof String s) out.add(s);
+                }
+                return out;
+            }
+            return Collections.emptyList();
+        }
+
+        /** {@code GET /api/pulse/evals/cases?suite=} — the cases in one suite. */
+        @SuppressWarnings("unchecked")
+        public List<Map<String, Object>> cases(String suiteId) {
+            Map<String, Object> result = client.request(
+                    "GET", "/api/pulse/evals/cases?suite=" + encode(suiteId), null, true);
+            Object cases = result.get("cases");
+            if (cases instanceof List<?> list) {
+                return (List<Map<String, Object>>) list;
+            }
+            return Collections.emptyList();
+        }
+
+        /** {@code POST /api/pulse/evals/cases} — adds or replaces one case. */
+        public Map<String, Object> saveCase(Map<String, Object> evalCase) {
+            return client.request("POST", "/api/pulse/evals/cases", evalCase, true);
+        }
+
+        /**
+         * {@code POST /api/pulse/evals/run} — replays every case in the suite.
+         *
+         * <p>A REGRESSION comes back as a normal response with
+         * {@code blocksRelease: true}, not as an exception: the run succeeded and
+         * the gate's verdict is data. Branch on {@code blocksRelease}, not on
+         * whether this threw.
+         */
+        public Map<String, Object> run(String suiteId) {
+            return client.request("POST", "/api/pulse/evals/run",
+                    Map.of("suiteId", suiteId), true);
+        }
+
+        /**
+         * {@code POST /api/pulse/evals/baseline} — records the current passing
+         * count as the floor future runs are held to. Call it after a run you are
+         * happy with; calling it after a bad one ratchets the floor DOWN.
+         */
+        public Map<String, Object> recordBaseline(String suiteId) {
+            return client.request("POST", "/api/pulse/evals/baseline",
+                    Map.of("suiteId", suiteId), true);
         }
     }
 

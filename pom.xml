@@ -19,12 +19,17 @@
 
     <groupId>io.streamflowmesh</groupId>
     <artifactId>pulse-client</artifactId>
-    <version>2.7.8</version>
+    <version>2.7.9</version>
     <packaging>jar</packaging>
 
     <name>Pulse Java Client</name>
     <description>Official Java client for StreamFlow Pulse — AI Agent Platform</description>
-    <url>https://github.com/olsisoft/pulse-java</url>
+    <!-- Public, verifiable links only (2026-08-13 credibility fix): the url/scm
+         pointed at the PRIVATE monorepo — a public 404 on the Maven Central page.
+         The scm points at the pulse-java distribution satellite (the repo this
+         directory is synced to by sdk-satellite-sync.yaml), which is where the
+         published source actually lives. -->
+    <url>https://streamflowmesh.io</url>
 
     <licenses>
         <license>
