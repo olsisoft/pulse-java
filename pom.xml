@@ -94,6 +94,21 @@
     </dependencies>
 
     <build>
+        <!-- LIC-01 - ship the Apache 2.0 text inside the artifacts. The main JAR
+             and the sources JAR (maven-source-plugin jar-no-fork below) both
+             package the build resources, so LICENSE lands in META-INF/LICENSE
+             of each. NOTE: declaring <resources> replaces the default
+             src/main/resources entry; that directory does not exist today, so
+             if one is ever added it must be listed here as well. -->
+        <resources>
+            <resource>
+                <directory>${project.basedir}</directory>
+                <includes>
+                    <include>LICENSE</include>
+                </includes>
+                <targetPath>META-INF</targetPath>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
