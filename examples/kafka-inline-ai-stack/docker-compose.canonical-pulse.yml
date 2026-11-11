@@ -16,7 +16,6 @@ services:
       PULSE_LEGACY_WRITES_FENCED: "${PULSE_LEGACY_WRITES_FENCED:-}"
       PULSE_AGENT_DB_OWNER_USER: "${PULSE_AGENT_DB_OWNER_USER:?explicit owner role required}"
       PULSE_AGENT_RUNTIME_DB_USER: "${PULSE_AGENT_RUNTIME_DB_USER:?explicit distinct runtime role required}"
-      PULSE_DB_OWNER_PASSWORD_FILE: /run/pulse-secrets/common-owner
       PULSE_AGENT_DB_OWNER_PASSWORD_FILE: /run/pulse-secrets/agent-owner
       PULSE_AGENT_RUNTIME_DB_PASSWORD_FILE: /run/pulse-secrets/agent-runtime
     ports:
@@ -25,12 +24,6 @@ services:
       - type: bind
         source: "${PULSE_LOCAL_DATA_DIR:?provide an explicit writable private local data directory}"
         target: /var/lib/pulse
-        bind:
-          create_host_path: false
-      - type: bind
-        source: "${PULSE_DB_OWNER_PASSWORD_PATH:?provide a private regular common owner secret file}"
-        target: /run/pulse-secrets/common-owner
-        read_only: true
         bind:
           create_host_path: false
       - type: bind

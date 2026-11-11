@@ -15,9 +15,12 @@ automatic fallback between modes. Supply the installation identity for every mod
 Maintenance reference and explicit legacy-process quiescence/write-fencing flags
 are required by fresh/adopt only; leave them unset for open. Supply full JDK 25
 in the qualified producer image (existing H2 Java-source triggers require it),
-and distinct owner/runtime roles. Mount the three password FILE inputs as private
+and distinct owner/runtime roles. Mount the two agent owner/runtime password FILE inputs as private
 regular files readable only by the image runtime identity. No raw password ENV is
 passed to the child and missing paths are not auto-created. Do not log their values.
+The qualified common database owner remains `sa` with an empty password; this
+profile deliberately omits a common-owner password FILE input. A custom common
+owner password is NOT_QUALIFIED by this profile.
 
 Run `docker compose -f examples/kafka-inline-ai-stack/docker-compose.canonical-pulse.yml config` first. Local qualification may then start this
 profile after the image and exact artifact subject are verified. This candidate
