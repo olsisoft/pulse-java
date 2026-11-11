@@ -10,6 +10,7 @@ services:
       PULSE_CUSTODY_MODE: "${PULSE_CUSTODY_MODE:?explicit fresh, adopt, or open required}"
       PULSE_DATA_DIR: /var/lib/pulse
       PULSE_PORT: "9090"
+      PULSE_SERVER_HOST: "0.0.0.0"
       PULSE_CLAIMS_INSTALLATION_ID: "${PULSE_CLAIMS_INSTALLATION_ID:?explicit local installation identity required}"
       PULSE_MAINTENANCE_REFERENCE: "${PULSE_MAINTENANCE_REFERENCE:-}"
       PULSE_LEGACY_PROCESSES_STOPPED: "${PULSE_LEGACY_PROCESSES_STOPPED:-}"

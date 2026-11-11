@@ -4,6 +4,8 @@ Canonical producer: [olsisoft/pulse](https://github.com/olsisoft/pulse). The sep
 `examples/kafka-inline-ai-stack/docker-compose.canonical-pulse.yml` consumes only an explicit locally built candidate image. It never pulls a
 registry default, builds historical Source, or merges an old embedded/mesh world.
 Existing compose files/images/versions remain unchanged LEGACY_COMPATIBILITY.
+The existing public `PULSE_SERVER_HOST=0.0.0.0` configuration enables the container
+interface; the published host port remains explicitly bound to `127.0.0.1`.
 
 Supply `PULSE_LOCAL_IMAGE` from the new qualified PE1 candidate receipt, an explicit
 private `PULSE_LOCAL_DATA_DIR`, and `PULSE_CUSTODY_MODE=fresh|adopt|open`. Fresh
