@@ -1,0 +1,41 @@
+# PE1 local/private canonical Pulse HTTP qualification only.
+# This is a separate file, not an override of the legacy embedded/mesh topology.
+# No registry tag is invented and no existing deployment selection changes.
+services:
+  pulse:
+    image: "${PULSE_LOCAL_IMAGE:?provide the locally built canonical Pulse candidate image}"
+    pull_policy: never
+    restart: "no"
+    environment:
+      PULSE_CUSTODY_MODE: "${PULSE_CUSTODY_MODE:?explicit fresh, adopt, or open required}"
+      PULSE_DATA_DIR: /var/lib/pulse
+      PULSE_PORT: "9090"
+      PULSE_SERVER_HOST: "0.0.0.0"
+      PULSE_CLAIMS_INSTALLATION_ID: "${PULSE_CLAIMS_INSTALLATION_ID:?explicit local installation identity required}"
+      PULSE_MAINTENANCE_REFERENCE: "${PULSE_MAINTENANCE_REFERENCE:-}"
+      PULSE_LEGACY_PROCESSES_STOPPED: "${PULSE_LEGACY_PROCESSES_STOPPED:-}"
+      PULSE_LEGACY_WRITES_FENCED: "${PULSE_LEGACY_WRITES_FENCED:-}"
+      PULSE_AGENT_DB_OWNER_USER: "${PULSE_AGENT_DB_OWNER_USER:?explicit owner role required}"
+      PULSE_AGENT_RUNTIME_DB_USER: "${PULSE_AGENT_RUNTIME_DB_USER:?explicit distinct runtime role required}"
+      PULSE_AGENT_DB_OWNER_PASSWORD_FILE: /run/pulse-secrets/agent-owner
+      PULSE_AGENT_RUNTIME_DB_PASSWORD_FILE: /run/pulse-secrets/agent-runtime
+    ports:
+      - "127.0.0.1:${PULSE_LOCAL_PORT:-19090}:9090"
+    volumes:
+      - type: bind
+        source: "${PULSE_LOCAL_DATA_DIR:?provide an explicit writable private local data directory}"
+        target: /var/lib/pulse
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${PULSE_AGENT_DB_OWNER_PASSWORD_PATH:?provide a private regular agent owner secret file}"
+        target: /run/pulse-secrets/agent-owner
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${PULSE_AGENT_RUNTIME_DB_PASSWORD_PATH:?provide a private regular runtime role secret file}"
+        target: /run/pulse-secrets/agent-runtime
+        read_only: true
+        bind:
+          create_host_path: false

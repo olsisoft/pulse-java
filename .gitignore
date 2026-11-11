@@ -13,3 +13,6 @@ dependency-reduced-pom.xml
 
 # OS
 .DS_Store
+
+# Explicit canonical guest SDK intake, never a sibling Source fallback
+.pulse-canonical-guest/

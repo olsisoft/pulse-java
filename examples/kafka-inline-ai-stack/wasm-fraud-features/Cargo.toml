@@ -6,7 +6,7 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 [dependencies]
-pulse-wasm-guest = { path = "../../../../pulse-wasm-guest" }
+pulse-wasm-guest = { path = "../../../.pulse-canonical-guest" }
 [profile.release]
 opt-level = "s"
 lto = true
