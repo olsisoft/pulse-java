@@ -1,3 +1,5 @@
+# LEGACY_COMPATIBILITY: existing published embedded/mesh topology, not canonical P0/P1.
+# PE1 local/private standalone HTTP uses the separate docker-compose.canonical-pulse.yml.
 # ─────────────────────────────────────────────────────────────────────────────
 # Kafka in, AI inline, Kafka out — one command. KEEP YOUR KAFKA.
 #
